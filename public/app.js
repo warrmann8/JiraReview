@@ -439,8 +439,8 @@ async function openIngestModal(bu) {
 
   modalBody.innerHTML = `
     ${cfgNote}
-    <h3>Add items to ${esc(bu.name)}</h3>
-    <div class="ai-line">Each ingested item is scored by the LLM using the Daedalus item-review framework, then persisted into the seed.</div>
+    <h3>Add Epics to ${esc(bu.name)}</h3>
+    <div class="ai-line">Scoring is <b>Epic-level only</b> — child Stories/Tasks roll up under their parent Epic as evidence. Initiative-type items are accepted as Epic-equivalents. Single-item scores use the full schema (rationale, dependencies, harvest, questions). Bulk runs use lite mode (~60% fewer output tokens — just verdict, gate, reason, harvest target).</div>
 
     <div class="form-grid" style="grid-template-columns:120px 1fr">
       <label>Project</label>
@@ -448,28 +448,32 @@ async function openIngestModal(bu) {
     </div>
 
     <div class="tab-row">
-      <button data-tab="single" class="active">Single item</button>
-      <button data-tab="bulk">Bulk JSON</button>
+      <button data-tab="single" class="active">Single Epic</button>
+      <button data-tab="bulk">Bulk JSON (lite)</button>
     </div>
 
     <div id="tab-single">
       <div class="form-grid">
         <label>Key *</label><input id="ing-key" placeholder="DSI-1234">
         <label>Summary *</label><input id="ing-summary" placeholder="Short summary">
-        <label>Type</label><input id="ing-type" placeholder="Epic / Story / Task / Idea" value="Story">
+        <label>Type *</label>
+        <select id="ing-type">
+          <option value="Epic" selected>Epic</option>
+          <option value="Initiative">Initiative</option>
+        </select>
         <label>Status</label><input id="ing-status" placeholder="In Progress / Backlog / Discovery">
         <label>Priority</label><input id="ing-priority" placeholder="High / Medium / Low">
-        <label>Parent key</label><input id="ing-parent-key" placeholder="AFIINIT-31">
-        <label>Parent summary</label><input id="ing-parent-sum" placeholder="...">
+        <label>Parent initiative</label><input id="ing-parent-key" placeholder="AFIINIT-31">
+        <label>Parent summary</label><input id="ing-parent-sum" placeholder="Initiative title">
         <label>Labels</label><input id="ing-labels" placeholder="comma,separated">
         <label>Assignee</label><input id="ing-assignee">
         <label>Updated</label><input id="ing-updated" placeholder="2026-05-01 or 22d ago">
-        <label>Description</label><textarea id="ing-desc" placeholder="Paste ticket description"></textarea>
+        <label>Description</label><textarea id="ing-desc" placeholder="Paste Epic description"></textarea>
       </div>
     </div>
 
     <div id="tab-bulk" style="display:none">
-      <label class="eyebrow" style="display:block;margin:6px 0">Paste a JSON array of items (max 200). Same fields as the form above — only \`key\` and \`summary\` are required.</label>
+      <label class="eyebrow" style="display:block;margin:6px 0">Paste a JSON array of Epics (max 200). Each item must have <code>type: "Epic"</code> or <code>"Initiative"</code> — others are skipped. Only <code>key</code> and <code>summary</code> are required. Bulk uses lite output mode.</label>
       <textarea id="ing-bulk" style="width:100%;min-height:180px;background:var(--bg3);border:1px solid var(--line);color:var(--hi);padding:10px;font:12px JetBrains Mono,monospace" placeholder='[{"key":"DSI-9001","summary":"...","type":"Epic","status":"Backlog","description":"..."}]'></textarea>
     </div>
 

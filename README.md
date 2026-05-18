@@ -15,19 +15,38 @@ npm start              # serves on http://localhost:4173
 
 ## LLM scorer
 
-The "Add items…" button on each BU page lets you ingest new Jira items (one
-at a time via a form, or bulk via a pasted JSON array). Each item is scored
+The "Add items…" button on each BU page lets you ingest new Jira Epics (one
+at a time via a form, or bulk via a pasted JSON array). Each Epic is scored
 by an LLM using the framework in `prompts/item-review.md` — the system prompt
-walks the gates, returns a verdict (KEEP / STOP / FOLD / FLAG) and the
-structured metadata in Section 7 of the prompt (gate, confidence, rationale,
-harvest target, dependencies, questions for human).
+walks the gates and returns a verdict (KEEP / STOP / FOLD / FLAG) plus
+structured metadata (gate, confidence, rationale, harvest target,
+dependencies, questions for human).
+
+**Scope: Epic-level only.** Stories, Tasks, Sub-tasks, and Bugs are not
+scored — they roll up under their parent Epic as evidence. The server
+rejects non-Epic types (Initiative is accepted as an Epic-equivalent).
 
 Two providers are wired up; pick one in `.env`:
 
 | Provider | Set                                                                                 |
 |----------|-------------------------------------------------------------------------------------|
+| Azure OpenAI (default) | `SCORER_PROVIDER=azure`, `AZURE_OPENAI_ENDPOINT=...`, `AZURE_OPENAI_API_KEY=...`, `AZURE_OPENAI_DEPLOYMENT=...` |
 | Anthropic | `SCORER_PROVIDER=anthropic`, `ANTHROPIC_API_KEY=...`, `ANTHROPIC_MODEL=claude-opus-4-7` |
-| Azure OpenAI | `SCORER_PROVIDER=azure`, `AZURE_OPENAI_ENDPOINT=...`, `AZURE_OPENAI_API_KEY=...`, `AZURE_OPENAI_DEPLOYMENT=...` |
+
+### Token-cost optimizations
+
+- **Trimmed system prompt** — the canonical Daedalus item-review spec was
+  ~33KB / ~8,500 tokens. The version in `prompts/item-review.md` strips the
+  worked examples and meta-instructions while preserving every gate, hard
+  rule, BU-context field, and the full output-schema field reference.
+  Now ~14KB / ~3,500 tokens — roughly 60% cheaper per call.
+- **Lite mode for bulk** — single-item ingests return the full Section 7
+  schema (rationale, dependencies, questions for human). Bulk ingests return
+  only `verdict / gate / reason / harvest_target` (about 60% fewer output
+  tokens). The decision modal renders gracefully for both shapes.
+- **Anthropic prompt caching** — the system prompt is sent with
+  `cache_control: ephemeral` so re-scoring 50 Epics in one session pays for
+  the system tokens once at ~1.25× and the rest at ~0.1×.
 
 Only newly ingested items are scored — existing items (the 1,318 seeded
 from the two HTML scrubs) keep their original verdicts. The AI metadata for

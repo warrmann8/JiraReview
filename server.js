@@ -6,7 +6,7 @@ require("dotenv").config({ path: require("path").join(__dirname, ".env") });
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
-const { scoreItem, getProvider } = require("./lib/scorer");
+const { scoreItem, getProvider, isEpicLevel, EPIC_LEVEL_TYPES } = require("./lib/scorer");
 
 const PORT = process.env.PORT || 4173;
 const DATA_DIR = path.join(__dirname, "data");
@@ -302,29 +302,43 @@ function persistScoredItem(item, scored) {
   if (existing) {
     return { skipped: true, reason: "already scored", key: item.key };
   }
+  const isLite = scored._meta && scored._meta.mode === "lite";
   const stored = {
     ...item,
     ai_verdict: scored.verdict,
     ai_gate: scored.gate,
     ai_reason: scored.reason,
     child_evidence: "",
-    ai_meta: {
-      provider: scored._meta.provider,
-      model: scored._meta.model,
-      scored_at: scored._meta.scored_at,
-      confidence: scored.confidence,
-      tentative_verdict: scored.tentative_verdict,
-      rationale: scored.rationale,
-      dependencies: scored.dependencies,
-      needs_to_resolve: scored.needs_to_resolve,
-      questions_for_human: scored.questions_for_human,
-      harvest: scored.harvest,
-      effort_estimate: scored.effort_estimate,
-      staleness_days: scored.staleness_days,
-      notes: scored.notes,
-      usage: scored._meta.usage,
-      latency_ms: scored._meta.latency_ms
-    }
+    ai_meta: isLite
+      ? {
+          provider: scored._meta.provider,
+          model: scored._meta.model,
+          mode: "lite",
+          scored_at: scored._meta.scored_at,
+          harvest: scored.verdict === "FOLD"
+            ? { applies: true, target: scored.harvest_target || "", note: "" }
+            : { applies: false, target: "", note: "" },
+          usage: scored._meta.usage,
+          latency_ms: scored._meta.latency_ms
+        }
+      : {
+          provider: scored._meta.provider,
+          model: scored._meta.model,
+          mode: "full",
+          scored_at: scored._meta.scored_at,
+          confidence: scored.confidence,
+          tentative_verdict: scored.tentative_verdict,
+          rationale: scored.rationale,
+          dependencies: scored.dependencies,
+          needs_to_resolve: scored.needs_to_resolve,
+          questions_for_human: scored.questions_for_human,
+          harvest: scored.harvest,
+          effort_estimate: scored.effort_estimate,
+          staleness_days: scored.staleness_days,
+          notes: scored.notes,
+          usage: scored._meta.usage,
+          latency_ms: scored._meta.latency_ms
+        }
   };
   loc.project.items.push(stored);
   loc.project.item_count = loc.project.items.length;
@@ -349,45 +363,57 @@ app.get("/api/scorer/info", (_req, res) => {
 
 // Score a single ad-hoc item without persisting (preview).
 app.post("/api/score", async (req, res) => {
-  const { item, bu_context } = req.body || {};
+  const { item, bu_context, mode } = req.body || {};
   if (!item || !item.key) return res.status(400).json({ error: "item.key required" });
+  if (!isEpicLevel(item.type)) {
+    return res.status(400).json({
+      error: `Scoring is Epic-level only. Item type was "${item.type || "<unset>"}". Allowed: ${EPIC_LEVEL_TYPES.join(", ")}.`
+    });
+  }
   try {
-    const scored = await scoreItem(item, bu_context);
+    const scored = await scoreItem(item, bu_context, { mode });
     res.json({ ok: true, scored });
   } catch (e) {
-    res.status(500).json({ error: String(e.message || e) });
+    res.status(e.code === "NOT_EPIC_LEVEL" ? 400 : 500).json({ error: String(e.message || e) });
   }
 });
 
-// Ingest one item into a project: score it, persist if new.
+// Ingest one item into a project: score it, persist if new. Uses full schema.
 app.post("/api/ingest/project/:key/single", async (req, res) => {
   const projectKey = req.params.key;
   const { item: raw, bu_context } = req.body || {};
   if (!raw) return res.status(400).json({ error: "item required" });
+  if (!isEpicLevel(raw.type)) {
+    return res.status(400).json({
+      error: `Scoring is Epic-level only. Item type was "${raw.type || "<unset>"}". Allowed: ${EPIC_LEVEL_TYPES.join(", ")}.`
+    });
+  }
   const seed = loadSeed();
   const loc = findProject(seed, projectKey);
   if (!loc) return res.status(404).json({ error: "project not found" });
   try {
     const item = normalizeIncoming(raw, projectKey, loc.bu.slug);
     const ctx = bu_context || buContextFor(loc.bu);
-    const scored = await scoreItem(item, ctx);
+    const scored = await scoreItem(item, ctx, { mode: "full" });
     const persisted = persistScoredItem(item, scored);
     res.json({ ok: true, scored, persisted });
   } catch (e) {
-    res.status(500).json({ error: String(e.message || e) });
+    res.status(e.code === "NOT_EPIC_LEVEL" ? 400 : 500).json({ error: String(e.message || e) });
   }
 });
 
-// Bulk ingest into a project. Scores serially to keep rate-limit risk down.
+// Bulk ingest into a project. Uses lite schema by default (~60% fewer output
+// tokens). Non-Epic items are rejected per-row, not for the whole batch.
 app.post("/api/ingest/project/:key/bulk", async (req, res) => {
   const projectKey = req.params.key;
-  const { items, bu_context } = req.body || {};
+  const { items, bu_context, mode } = req.body || {};
   if (!Array.isArray(items) || items.length === 0) {
     return res.status(400).json({ error: "items[] required" });
   }
   if (items.length > 200) {
     return res.status(400).json({ error: "max 200 items per bulk call" });
   }
+  const useMode = mode === "full" ? "full" : "lite";
   const seed = loadSeed();
   const loc = findProject(seed, projectKey);
   if (!loc) return res.status(404).json({ error: "project not found" });
@@ -396,6 +422,15 @@ app.post("/api/ingest/project/:key/bulk", async (req, res) => {
   const results = [];
   for (const raw of items) {
     try {
+      if (!isEpicLevel(raw && raw.type)) {
+        results.push({
+          key: raw && raw.key,
+          ok: true,
+          skipped: true,
+          reason: `not Epic-level (type="${(raw && raw.type) || "<unset>"}")`
+        });
+        continue;
+      }
       const item = normalizeIncoming(raw, projectKey, loc.bu.slug);
       const seedNow = loadSeed();
       const locNow = findProject(seedNow, projectKey);
@@ -403,14 +438,14 @@ app.post("/api/ingest/project/:key/bulk", async (req, res) => {
         results.push({ key: item.key, ok: true, skipped: true, reason: "already scored" });
         continue;
       }
-      const scored = await scoreItem(item, ctx);
+      const scored = await scoreItem(item, ctx, { mode: useMode });
       const persisted = persistScoredItem(item, scored);
       results.push({ key: item.key, ok: true, verdict: scored.verdict, persisted });
     } catch (e) {
       results.push({ key: raw && raw.key, ok: false, error: String(e.message || e) });
     }
   }
-  res.json({ ok: true, results });
+  res.json({ ok: true, results, mode: useMode });
 });
 
 app.listen(PORT, () => {
