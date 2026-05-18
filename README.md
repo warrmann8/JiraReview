@@ -8,9 +8,31 @@ decision to an append-only audit log. Nothing here writes back to Jira.
 
 ```
 npm install
-npm run seed     # rebuilds data/seed.json from the source scrub HTMLs
-npm start        # serves on http://localhost:4173
+cp .env.example .env   # then fill in your provider keys
+npm run seed           # rebuilds data/seed.json from the source scrub HTMLs
+npm start              # serves on http://localhost:4173
 ```
+
+## LLM scorer
+
+The "Add items…" button on each BU page lets you ingest new Jira items (one
+at a time via a form, or bulk via a pasted JSON array). Each item is scored
+by an LLM using the framework in `prompts/item-review.md` — the system prompt
+walks the gates, returns a verdict (KEEP / STOP / FOLD / FLAG) and the
+structured metadata in Section 7 of the prompt (gate, confidence, rationale,
+harvest target, dependencies, questions for human).
+
+Two providers are wired up; pick one in `.env`:
+
+| Provider | Set                                                                                 |
+|----------|-------------------------------------------------------------------------------------|
+| Anthropic | `SCORER_PROVIDER=anthropic`, `ANTHROPIC_API_KEY=...`, `ANTHROPIC_MODEL=claude-opus-4-7` |
+| Azure OpenAI | `SCORER_PROVIDER=azure`, `AZURE_OPENAI_ENDPOINT=...`, `AZURE_OPENAI_API_KEY=...`, `AZURE_OPENAI_DEPLOYMENT=...` |
+
+Only newly ingested items are scored — existing items (the 1,318 seeded
+from the two HTML scrubs) keep their original verdicts. The AI metadata for
+each scored item appears in the decision modal alongside the human override
+controls.
 
 Open `http://localhost:4173`. Pick a BU. Walk items. Use the per-row buttons to
 set a verdict (KEEP / FOLD / FLAG / STOP — labeled "Kill" on the action row).
