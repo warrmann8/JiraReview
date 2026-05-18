@@ -8,37 +8,72 @@ const ACTOR_KEY = "scrub_actor";
 const app = document.getElementById("app");
 const modal = document.getElementById("modal");
 const modalBody = document.getElementById("modal-body");
-const actorInput = document.getElementById("actor");
-const refreshAllBtn = document.getElementById("refreshAll");
-const generatedEl = document.getElementById("generated");
-const buJump = document.getElementById("bu-jump");
-const scorerStatusEl = document.getElementById("scorer-status");
-const jiraStatusEl = document.getElementById("jira-status");
-const navLinks = document.querySelectorAll(".navlink[data-route]");
+const sidebar = document.getElementById("sidebar");
+const sideToggle = document.getElementById("side-toggle");
+const sideBus = document.getElementById("side-bus");
+const sideStatus = document.getElementById("side-status");
+const sideActor = document.getElementById("side-actor");
+const navLinks = document.querySelectorAll(".side-item[data-route]");
 
-// Cached BU list so the switcher doesn't refetch on every navigation.
+// Sidebar collapse state persists across sessions.
+const SIDEBAR_KEY = "scrub_sidebar_expanded";
+function applySidebarState() {
+  const expanded = localStorage.getItem(SIDEBAR_KEY) === "1";
+  sidebar.classList.toggle("expanded", expanded);
+}
+sideToggle.addEventListener("click", () => {
+  const isExpanded = sidebar.classList.toggle("expanded");
+  localStorage.setItem(SIDEBAR_KEY, isExpanded ? "1" : "0");
+});
+applySidebarState();
+
+// Cached BU list so the sidebar doesn't refetch on every navigation.
 let _busCache = null;
 async function getBus() {
   if (_busCache) return _busCache;
   const data = await api("GET", "/api/bus");
   _busCache = data;
-  populateBuJump(data);
+  populateSideBus(data);
   return data;
 }
-function populateBuJump(data) {
-  if (!buJump) return;
-  const current = location.hash.startsWith("#/bu/") ? location.hash.slice(5) : "";
-  const opts = ["<option value=\"\">— select BU —</option>"];
-  for (const bu of data.bus) {
-    const empty = (bu.item_count || 0) === 0 ? " · empty" : ` · ${bu.item_count}`;
-    opts.push(`<option value="${esc(bu.slug)}" ${bu.slug === current ? "selected" : ""}>${esc(bu.name)}${empty}</option>`);
-  }
-  buJump.innerHTML = opts.join("");
+
+function buInitials(name) {
+  // "AFI Data & Analytics" -> "DA"; "AGR Customer Care" -> "CC"; "AFI HR / People" -> "HR"
+  const skip = new Set(["afi", "agr", "the", "of", "and", "&"]);
+  const words = name.replace(/[/(),]/g, " ").split(/\s+/).filter(w => w && !skip.has(w.toLowerCase()));
+  if (words.length === 0) return name.slice(0, 2).toUpperCase();
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return (words[0][0] + words[1][0]).toUpperCase();
 }
-if (buJump) {
-  buJump.addEventListener("change", () => {
-    if (buJump.value) location.hash = `#/bu/${buJump.value}`;
+
+function populateSideBus(data) {
+  if (!sideBus) return;
+  const current = location.hash.startsWith("#/bu/") ? location.hash.slice(5) : "";
+  // Sort: populated first (by item_count desc), then empty alphabetical.
+  const sorted = data.bus.slice().sort((a, b) => {
+    const ap = (a.item_count || 0) > 0 ? 1 : 0;
+    const bp = (b.item_count || 0) > 0 ? 1 : 0;
+    if (ap !== bp) return bp - ap;
+    if (ap) return (b.item_count || 0) - (a.item_count || 0);
+    return a.name.localeCompare(b.name);
   });
+  sideBus.innerHTML = sorted.map(bu => {
+    const t = bu.tally || { KEEP: 0, STOP: 0, FOLD: 0, FLAG: 0, total: 0, overrides: 0 };
+    const empty = (bu.item_count || 0) === 0;
+    const initials = buInitials(bu.name);
+    const segs = t.total ? VERDICTS.map(v => `<span class="seg-${v}" style="width:${(100 * (t[v] || 0)) / t.total}%"></span>`).join("") : "";
+    const meta = empty
+      ? `<div class="bu-meta">empty</div>`
+      : `<div class="bu-meta">${bu.item_count} epic${bu.item_count === 1 ? "" : "s"}${t.overrides ? ` · <span class="ov">${t.overrides} override${t.overrides === 1 ? "" : "s"}</span>` : ""}</div>
+         ${segs ? `<div class="bu-bar">${segs}</div>` : ""}`;
+    return `<a class="side-bu${empty ? " empty" : ""}${bu.slug === current ? " active" : ""}" href="#/bu/${esc(bu.slug)}" title="${esc(bu.name)}">
+      <span class="bu-mark">${esc(initials)}</span>
+      <div class="bu-body">
+        <div class="bu-name">${esc(bu.name)}</div>
+        ${meta}
+      </div>
+    </a>`;
+  }).join("");
 }
 
 function setNavActive() {
@@ -47,86 +82,100 @@ function setNavActive() {
   if (!h || h === "#" || h === "#/") activeRoute = "home";
   else if (h.startsWith("#/prompt")) activeRoute = "prompt";
   navLinks.forEach(a => a.classList.toggle("active", a.dataset.route === activeRoute));
-  // Keep the switcher in sync with current route.
-  if (buJump) {
-    const cur = location.hash.startsWith("#/bu/") ? location.hash.slice(5) : "";
-    if (cur !== buJump.value) buJump.value = cur;
-  }
+  // Keep the BU list active state in sync.
+  const cur = location.hash.startsWith("#/bu/") ? location.hash.slice(5) : "";
+  document.querySelectorAll(".side-bu").forEach(b => {
+    b.classList.toggle("active", b.getAttribute("href") === `#/bu/${cur}`);
+  });
 }
 
 async function refreshHeaderStatus() {
-  // Scorer status
-  try {
-    const s = await api("GET", "/api/scorer/info");
-    scorerStatusEl.className = "status " + (s.configured ? "ok" : "warn");
-    scorerStatusEl.innerHTML = `<span class="dot"></span>scorer · ${esc(s.configured ? s.provider : "not configured")}`;
-  } catch {
-    scorerStatusEl.className = "status err";
-    scorerStatusEl.innerHTML = `<span class="dot"></span>scorer · error`;
-  }
-  // Jira status
-  try {
-    const j = await api("GET", "/api/jira/status");
-    if (!j.configured) {
-      jiraStatusEl.className = "status warn";
-      jiraStatusEl.innerHTML = `<span class="dot"></span>jira · offline`;
-    } else if (j.ping_ok === false || j.error) {
-      jiraStatusEl.className = "status warn";
-      jiraStatusEl.innerHTML = `<span class="dot"></span>jira · stubs`;
-    } else {
-      jiraStatusEl.className = "status ok";
-      jiraStatusEl.innerHTML = `<span class="dot"></span>jira · live`;
-    }
-  } catch {
-    jiraStatusEl.className = "status err";
-    jiraStatusEl.innerHTML = `<span class="dot"></span>jira · error`;
-  }
+  // Scorer + Jira indicators
+  const scorerBits = await (async () => {
+    try {
+      const s = await api("GET", "/api/scorer/info");
+      return { cls: s.configured ? "ok" : "warn", txt: `scorer · ${s.configured ? s.provider : "off"}` };
+    } catch { return { cls: "err", txt: "scorer · error" }; }
+  })();
+  const jiraBits = await (async () => {
+    try {
+      const j = await api("GET", "/api/jira/status");
+      if (!j.configured) return { cls: "warn", txt: "jira · offline" };
+      if (j.ping_ok === false || j.error) return { cls: "warn", txt: "jira · stubs" };
+      return { cls: "ok", txt: "jira · live" };
+    } catch { return { cls: "err", txt: "jira · error" }; }
+  })();
+  sideStatus.innerHTML = `
+    <div class="status ${scorerBits.cls}" title="${esc(scorerBits.txt)}"><span class="dot"></span><span class="txt">${esc(scorerBits.txt)}</span></div>
+    <div class="status ${jiraBits.cls}" title="${esc(jiraBits.txt)}"><span class="dot"></span><span class="txt">${esc(jiraBits.txt)}</span></div>
+  `;
 
-  // Actor line: swap to SSO-aware widget if SSO is enabled.
-  try {
-    const me = await api("GET", "/auth/me");
-    const line = document.getElementById("actor-line");
-    if (!line) return;
-    if (!me.enabled) return; // leave the existing actor input alone
-    if (me.user) {
-      line.innerHTML = `
-        <span class="status ok"><span class="dot"></span>signed in</span>
-        <span class="actor-name">${esc(me.user.name || me.user.email || me.user.oid)}</span>
-        <button class="mini-btn" id="sso-logout" title="Sign out">Sign out</button>
+  // Actor widget — SSO-aware
+  let me = { enabled: false, user: null };
+  try { me = await api("GET", "/auth/me"); } catch {}
+  if (!me.enabled) {
+    // Single-user dev mode: actor name input + Refresh all
+    const saved = localStorage.getItem(ACTOR_KEY) || "";
+    sideActor.innerHTML = `
+      <div class="actor-row" title="${esc(saved || "anonymous")}"><div class="avatar">${esc(initialsOf(saved || "?"))}</div><span class="who">${esc(saved || "anonymous")}</span></div>
+      <input id="actor" placeholder="your name" value="${esc(saved)}">
+      <div class="row-actions">
         <button class="mini-btn" id="refreshAll" title="Re-read live data">Refresh all</button>
-      `;
-      document.getElementById("sso-logout").addEventListener("click", async () => {
-        try { await api("POST", "/auth/logout"); } catch {}
-        location.reload();
-      });
-    } else {
-      line.innerHTML = `
-        <span class="status warn"><span class="dot"></span>signed out</span>
-        <a href="/auth/login" class="mini-btn primary">Sign in with Microsoft</a>
-        <button class="mini-btn" id="refreshAll" title="Re-read live data">Refresh all</button>
-      `;
-    }
-    // Re-wire the new refreshAll button (replaced node, lost listener)
-    const r = document.getElementById("refreshAll");
-    if (r) r.addEventListener("click", refreshAllHandler);
-  } catch {
-    // SSO endpoint unreachable — leave the manual actor box alone.
+      </div>
+    `;
+    const inp = document.getElementById("actor");
+    inp.addEventListener("change", () => {
+      if (inp.value.trim()) localStorage.setItem(ACTOR_KEY, inp.value.trim());
+      sideActor.querySelector(".avatar").textContent = initialsOf(inp.value.trim() || "?");
+      sideActor.querySelector(".who").textContent = inp.value.trim() || "anonymous";
+    });
+  } else if (me.user) {
+    const display = me.user.name || me.user.email || me.user.oid;
+    sideActor.innerHTML = `
+      <div class="actor-row" title="${esc(display)}"><div class="avatar">${esc(initialsOf(display))}</div><span class="who">${esc(display)}</span></div>
+      <div class="row-actions">
+        <button class="mini-btn" id="refreshAll">Refresh</button>
+        <button class="mini-btn" id="sso-logout">Sign out</button>
+      </div>
+    `;
+    document.getElementById("sso-logout").addEventListener("click", async () => {
+      try { await api("POST", "/auth/logout"); } catch {}
+      location.reload();
+    });
+  } else {
+    sideActor.innerHTML = `
+      <div class="actor-row"><div class="avatar">?</div><span class="who">signed out</span></div>
+      <div class="row-actions">
+        <a href="/auth/login" class="mini-btn primary" style="flex:1;text-decoration:none">Sign in</a>
+      </div>
+    `;
   }
+  const r = document.getElementById("refreshAll");
+  if (r) r.addEventListener("click", refreshAllHandler);
+}
+
+function initialsOf(name) {
+  if (!name) return "?";
+  const parts = name.replace(/[._-]/g, " ").split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return name.slice(0, 2).toUpperCase();
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 async function refreshAllHandler(e) {
   const btn = e.currentTarget;
   btn.disabled = true;
   btn.dataset.orig = btn.textContent;
-  btn.innerHTML = `<span class="spinner-sm"></span> Refreshing`;
+  btn.innerHTML = `<span class="spinner-sm"></span>`;
   try {
     await api("POST", "/api/refresh");
     _busCache = null;
     await refreshHeaderStatus();
+    await getBus();
     route();
   } finally {
     btn.disabled = false;
-    btn.textContent = btn.dataset.orig || "Refresh all";
+    btn.textContent = btn.dataset.orig || "Refresh";
   }
 }
 
@@ -134,11 +183,18 @@ async function refreshAllHandler(e) {
 const esc = (s) => (s == null ? "" : String(s)).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 const fmtDate = (iso) => iso ? new Date(iso).toLocaleString() : "—";
 
-function getActor() { return actorInput.value.trim() || localStorage.getItem(ACTOR_KEY) || "anonymous"; }
-function saveActor() { if (actorInput.value.trim()) localStorage.setItem(ACTOR_KEY, actorInput.value.trim()); }
-actorInput.value = localStorage.getItem(ACTOR_KEY) || "";
-actorInput.addEventListener("change", saveActor);
-actorInput.addEventListener("blur", saveActor);
+// Actor is now read from the sidebar's dynamically-rendered input (or, when
+// SSO is on, from the session — server-side). The helpers stay so the modal
+// can still attribute decisions in dev mode.
+function getActor() {
+  const inp = document.getElementById("actor");
+  const fromInput = inp ? inp.value.trim() : "";
+  return fromInput || localStorage.getItem(ACTOR_KEY) || "anonymous";
+}
+function saveActor() {
+  const inp = document.getElementById("actor");
+  if (inp && inp.value.trim()) localStorage.setItem(ACTOR_KEY, inp.value.trim());
+}
 
 async function api(method, path, body) {
   const res = await fetch(path, {
@@ -172,7 +228,8 @@ function route() {
   else renderLanding();
 }
 
-refreshAllBtn.addEventListener("click", refreshAllHandler);
+// Refresh-all button is now rendered dynamically inside the sidebar actor
+// widget; refreshHeaderStatus wires it up after every (re)render.
 
 // ---- landing: list of BUs ----
 async function renderLanding() {
@@ -184,7 +241,7 @@ async function renderLanding() {
     _busCache = data;
     populateBuJump(data);
   } catch (e) { app.innerHTML = `<div class="note">Could not load BUs: ${esc(e.message)}</div>`; return; }
-  generatedEl.textContent = `seed · ${data.generated_at ? new Date(data.generated_at).toLocaleDateString() : "—"}`;
+  // (was: generatedEl status — sidebar shows status differently now)
 
   // Roll the BU tallies up into a portfolio summary so the landing
   // page leads with totals instead of just a grid.
@@ -266,7 +323,7 @@ async function renderBu(slug) {
   try { bu = await api("GET", `/api/bu/${encodeURIComponent(slug)}`); }
   catch (e) { document.getElementById("bu-body").innerHTML = `<div class="note">Could not load BU: ${esc(e.message)}</div>`; return; }
   document.getElementById("cur").textContent = bu.name;
-  generatedEl.textContent = bu.scrubbed_date ? `scrub · ${bu.scrubbed_date}` : `not yet scrubbed`;
+  // (was: generatedEl status — sidebar shows status differently now)
 
   Object.assign(filterState, { verdict: null, status: null, project: null, gate: null, initiative: null, search: "", quick: null });
 
@@ -627,7 +684,7 @@ async function renderPromptEditor() {
       <span id="cur">AI evaluation rules</span>
     </div>
     <div id="prompt-body">Loading…</div>`;
-  generatedEl.textContent = "rules · editing";
+  // (was: generatedEl status — sidebar shows status differently now)
 
   let data, history;
   try {
@@ -855,6 +912,8 @@ async function openDecisionModal(key, preselect, bu) {
         actor: getActor()
       });
       closeModal();
+      _busCache = null;
+      getBus().catch(() => {});
       renderBu(bu.slug);
     } catch (e) { alert("Save failed: " + e.message); }
   });
@@ -865,6 +924,8 @@ async function openDecisionModal(key, preselect, bu) {
     try {
       await api("DELETE", `/api/decision/${encodeURIComponent(item.key)}`, { actor: getActor() });
       closeModal();
+      _busCache = null;
+      getBus().catch(() => {});
       renderBu(bu.slug);
     } catch (e) { alert("Clear failed: " + e.message); }
   });

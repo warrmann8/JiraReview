@@ -10,35 +10,42 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <header class="appbar">
-    <div class="brand">
-      <a href="#/" class="brand-link">
-        <span class="brand-mark">◇</span>
-        <span class="brand-name">Daedalus Scrub</span>
-      </a>
-    </div>
-    <nav class="appnav">
-      <a href="#/" class="navlink" data-route="home">Portfolio</a>
-      <a href="#/prompt" class="navlink" data-route="prompt">AI rules</a>
-      <div class="bu-switch">
-        <label for="bu-jump" class="bu-switch-label">Jump to BU</label>
-        <select id="bu-jump"><option value="">—</option></select>
+  <div class="shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="side-head">
+        <a href="#/" class="brand-link" title="Daedalus Scrub">
+          <span class="brand-mark">◇</span>
+          <span class="brand-name">Daedalus Scrub</span>
+        </a>
+        <button class="side-toggle" id="side-toggle" aria-label="Toggle sidebar">
+          <span class="chev">‹</span>
+        </button>
       </div>
-    </nav>
-    <div class="appmeta">
-      <div class="status-line">
-        <span id="scorer-status" class="status"></span>
-        <span id="jira-status" class="status"></span>
-        <span id="generated" class="status"></span>
+
+      <nav class="side-nav">
+        <a href="#/" class="side-item" data-route="home" title="Portfolio">
+          <span class="ico">▦</span>
+          <span class="lbl">Portfolio</span>
+        </a>
+        <a href="#/prompt" class="side-item" data-route="prompt" title="AI evaluation rules">
+          <span class="ico">⚙</span>
+          <span class="lbl">AI rules</span>
+        </a>
+      </nav>
+
+      <div class="side-section">
+        <div class="side-heading">Business Units</div>
+        <div class="side-bus" id="side-bus"></div>
       </div>
-      <div class="actor-line" id="actor-line">
-        <label for="actor">actor</label>
-        <input id="actor" placeholder="your name">
-        <button class="mini-btn" id="refreshAll" title="Re-read live data">Refresh all</button>
+
+      <div class="side-foot">
+        <div class="side-status" id="side-status"></div>
+        <div class="side-actor" id="side-actor"></div>
       </div>
-    </div>
-  </header>
-  <main id="app"></main>
+    </aside>
+
+    <main id="app"></main>
+  </div>
 
   <div class="modal-backdrop" id="modal">
     <div class="modal" id="modal-body"></div>
