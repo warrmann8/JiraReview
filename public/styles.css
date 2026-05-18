@@ -41,6 +41,7 @@ header.appbar{position:sticky;top:0;z-index:10;background:rgba(10,11,13,.96);bac
 .appmeta .actor-line label{font:9px "JetBrains Mono",monospace;letter-spacing:.16em;text-transform:uppercase;color:var(--low)}
 .appmeta .actor-line input{background:var(--bg2);border:1px solid var(--line);color:var(--hi);padding:6px 8px;font:11px "JetBrains Mono",monospace;width:140px;border-radius:2px}
 .appmeta .actor-line input:focus{outline:1px solid var(--accent);border-color:var(--accent)}
+.appmeta .actor-name{font-family:Fraunces,Georgia,serif;font-size:14px;color:var(--hi);padding:0 4px}
 
 main{position:relative;z-index:1;max-width:1880px;margin:0 auto;padding:28px 40px 80px}
 
@@ -243,6 +244,19 @@ table.items tbody tr:hover .click-hint{opacity:.6}
 .spinner{display:inline-block;width:10px;height:10px;border:1px solid var(--accent);border-top-color:transparent;border-radius:50%;animation:spin 0.7s linear infinite;vertical-align:-1px;margin-right:6px}
 .spinner-sm{display:inline-block;width:8px;height:8px;border:1px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin 0.6s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
+
+/* Prompt editor */
+.prompt-actions{display:flex;align-items:center;gap:8px;margin:16px 0 10px}
+.dirty-tag{font:10px "JetBrains Mono",monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);padding:6px 10px;border:1px solid var(--accent);border-radius:2px;background:rgba(212,165,116,.08)}
+.prompt-editor{width:100%;min-height:560px;background:var(--bg2);border:1px solid var(--line);color:var(--hi);padding:18px 20px;font:13px/1.55 "JetBrains Mono",ui-monospace,SFMono-Regular,monospace;resize:vertical;border-radius:2px;tab-size:2}
+.prompt-editor:focus{outline:1px solid var(--accent);border-color:var(--accent)}
+.history-panel{margin-top:24px;padding-top:18px;border-top:1px solid var(--line)}
+.history-panel h3{font-family:Fraunces,Georgia,serif;font-weight:400;color:var(--hi);font-size:20px;margin:0 0 4px}
+.hist-row{display:grid;grid-template-columns:200px 1fr 80px auto auto;gap:10px;align-items:center;padding:8px 0;border-bottom:1px solid var(--line2);font:11px "JetBrains Mono",monospace;color:var(--text)}
+.hist-row .hist-when{color:var(--hi)}
+.hist-row .hist-name{color:var(--mid)}
+.hist-row .hist-bytes{color:var(--low);text-align:right}
+.hist-preview-pre{margin-top:8px;padding:14px 18px;background:var(--bg3);border:1px solid var(--line2);font:11px/1.55 "JetBrains Mono",monospace;color:var(--text);max-height:360px;overflow:auto;white-space:pre-wrap}
 
 /* Modal: keyboard shortcut hints */
 .modal .verdict-row button{position:relative}

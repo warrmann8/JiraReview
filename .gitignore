@@ -9,3 +9,6 @@ npm-debug.log
 # Per-user runtime state (overrides + audit log). Regenerate by using the app.
 data/state.json
 data/decisions.jsonl
+
+# Per-env snapshots from the in-app prompt editor.
+prompts/history/

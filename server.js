@@ -6,8 +6,10 @@ require("dotenv").config({ path: require("path").join(__dirname, ".env") });
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { scoreItem, getProvider, isEpicLevel, EPIC_LEVEL_TYPES } = require("./lib/scorer");
 const jira = require("./lib/jira");
+const auth = require("./lib/auth");
 
 const PORT = process.env.PORT || 4173;
 const DATA_DIR = path.join(__dirname, "data");
@@ -91,6 +93,38 @@ function readDecisionsFor(key) {
 // ---- App ----
 const app = express();
 app.use(express.json({ limit: "2mb" }));
+
+// Session middleware — required by Microsoft SSO when enabled. Loaded
+// always so /auth/me works even in disabled mode (returns enabled:false).
+let session;
+try { session = require("express-session"); }
+catch { session = null; }
+if (session) {
+  app.use(session({
+    secret: process.env.AUTH_SESSION_SECRET || crypto.randomBytes(32).toString("hex"),
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      maxAge: 8 * 60 * 60 * 1000 // 8 hours
+    }
+  }));
+}
+
+// Auth routes (/auth/login, /auth/callback, /auth/logout, /auth/me).
+auth.mount(app);
+
+// Gate /api and the SPA behind SSO when enabled. requireAuth is a no-op
+// when SSO is disabled, so dev / single-user mode still works as before.
+app.use((req, res, next) => {
+  // Always allow these regardless of auth state.
+  if (req.path === "/auth/me" || req.path.startsWith("/auth/")) return next();
+  if (req.path === "/styles.css" || req.path === "/app.js" || req.path === "/favicon.ico") return next();
+  return auth.requireAuth(req, res, next);
+});
+
 app.use(express.static(path.join(__dirname, "public")));
 
 app.get("/api/health", (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
@@ -158,13 +192,19 @@ app.post("/api/decision", (req, res) => {
   }
   if (!found) return res.status(404).json({ error: "item not found in seed" });
 
+  // SSO identity wins over client-supplied actor field. Falls back to the
+  // textbox when SSO is disabled (dev / single-user mode).
+  const ssoUser = auth.currentUser(req);
+  const actorIdentity = ssoUser ? (ssoUser.email || ssoUser.name || ssoUser.oid) : (actor || "anonymous");
+
   const state = loadState();
   const prev = state.overrides[key] || null;
   const decided_at = new Date().toISOString();
   const next = {
     verdict,
     reason: reason || "",
-    actor: actor || "anonymous",
+    actor: actorIdentity,
+    actor_oid: ssoUser ? ssoUser.oid : null,
     decided_at
   };
   state.overrides[key] = next;
@@ -178,7 +218,8 @@ app.post("/api/decision", (req, res) => {
     previous_verdict: prev ? prev.verdict : null,
     new_verdict: verdict,
     reason: reason || "",
-    actor: actor || "anonymous",
+    actor: actorIdentity,
+    actor_oid: ssoUser ? ssoUser.oid : null,
     decided_at
   });
 
@@ -486,6 +527,94 @@ app.get("/api/bu/:slug/initiatives", (req, res) => {
     return b.count - a.count;
   });
   res.json({ bu: bu.slug, initiatives });
+});
+
+// ---- Prompt editor ----
+//
+// The evaluation rules the LLM uses live in prompts/item-review.md. The
+// editor lets reviewers tweak gates/rules/cheatsheet without redeploying.
+// Every save snapshots the previous version into prompts/history/ so an
+// edit can be rolled back. Save also nudges the scorer to re-read the
+// file on the next request (the module currently reads on require, so we
+// bust its require-cache).
+
+const PROMPT_FILE = path.join(__dirname, "prompts", "item-review.md");
+const PROMPT_HISTORY = path.join(__dirname, "prompts", "history");
+
+app.get("/api/prompt", (_req, res) => {
+  try {
+    const content = fs.readFileSync(PROMPT_FILE, "utf8");
+    const stat = fs.statSync(PROMPT_FILE);
+    res.json({
+      ok: true,
+      content,
+      bytes: content.length,
+      updated_at: stat.mtime.toISOString(),
+      approx_tokens: Math.round(content.length / 4)
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.put("/api/prompt", (req, res) => {
+  const { content } = req.body || {};
+  if (typeof content !== "string" || !content.trim()) {
+    return res.status(400).json({ error: "content (string, non-empty) required" });
+  }
+  if (content.length > 200000) {
+    return res.status(400).json({ error: "prompt too large (max 200KB)" });
+  }
+  try {
+    if (!fs.existsSync(PROMPT_HISTORY)) fs.mkdirSync(PROMPT_HISTORY, { recursive: true });
+    const prev = fs.readFileSync(PROMPT_FILE, "utf8");
+    const ts = new Date().toISOString().replace(/[:.]/g, "-");
+    const actor = (auth.currentUser(req) && auth.currentUser(req).email) || (req.body.actor || "anonymous");
+    const histFile = path.join(PROMPT_HISTORY, `item-review.${ts}.md`);
+    fs.writeFileSync(histFile, `<!-- replaced ${ts} by ${actor} -->\n${prev}`);
+    fs.writeFileSync(PROMPT_FILE, content);
+    // Bust the scorer's cached read so the next score uses the new prompt.
+    delete require.cache[require.resolve("./lib/scorer")];
+    res.json({
+      ok: true,
+      bytes: content.length,
+      approx_tokens: Math.round(content.length / 4),
+      snapshotted_to: path.basename(histFile)
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get("/api/prompt/history", (_req, res) => {
+  try {
+    if (!fs.existsSync(PROMPT_HISTORY)) return res.json({ history: [] });
+    const files = fs.readdirSync(PROMPT_HISTORY)
+      .filter(f => f.endsWith(".md"))
+      .sort()
+      .reverse()
+      .slice(0, 20)
+      .map(f => {
+        const full = path.join(PROMPT_HISTORY, f);
+        const stat = fs.statSync(full);
+        return { name: f, bytes: stat.size, saved_at: stat.mtime.toISOString() };
+      });
+    res.json({ history: files });
+  } catch (e) {
+    res.status(500).json({ error: String(e.message || e) });
+  }
+});
+
+app.get("/api/prompt/history/:name", (req, res) => {
+  const name = req.params.name;
+  if (!/^[A-Za-z0-9._-]+\.md$/.test(name)) return res.status(400).json({ error: "invalid name" });
+  try {
+    const full = path.join(PROMPT_HISTORY, name);
+    const content = fs.readFileSync(full, "utf8");
+    res.json({ ok: true, name, content });
+  } catch {
+    res.status(404).json({ error: "not found" });
+  }
 });
 
 app.get("/api/scorer/info", (_req, res) => {
