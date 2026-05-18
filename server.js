@@ -7,6 +7,7 @@ const express = require("express");
 const fs = require("fs");
 const path = require("path");
 const { scoreItem, getProvider, isEpicLevel, EPIC_LEVEL_TYPES } = require("./lib/scorer");
+const jira = require("./lib/jira");
 
 const PORT = process.env.PORT || 4173;
 const DATA_DIR = path.join(__dirname, "data");
@@ -204,46 +205,163 @@ app.get("/api/decisions", (req, res) => {
   res.json({ decisions: readDecisionsFor(req.query.key) });
 });
 
-// Refresh hooks — today they just re-read the seed file. Wire to Jira later
-// by replacing the body of these handlers to call Jira and rewrite seed.json
-// for the affected scope, then return the new tally.
-app.post("/api/refresh", (_req, res) => {
-  const seed = loadSeed();
-  res.json({
-    ok: true,
-    refreshed_at: new Date().toISOString(),
-    generated_at: seed.generated_at,
-    note: "Stub refresh — re-reads data/seed.json. Wire Jira pull here when ready."
-  });
+// ---- Jira integration ----
+//
+// Refresh endpoints call into lib/jira.js. Until that module's stubs are
+// filled in, refresh returns a 501 with structured guidance pointing the
+// implementer at JIRA-HANDOFF.md.
+//
+// Once jira.js is implemented, the handlers below pull Epics for the
+// requested scope, persist them via persistScoredItem (no LLM rescore;
+// existing items keep their verdicts; new items get scored on the next
+// /api/ingest call), and return the refreshed tally.
+
+function jiraErrorResponse(res, e) {
+  if (e && e.code === "JIRA_NOT_CONFIGURED") {
+    return res.status(501).json({
+      error: e.message,
+      code: e.code,
+      missing: e.missing,
+      handoff: "See JIRA-HANDOFF.md — set the env vars and restart."
+    });
+  }
+  if (e && e.code === "JIRA_NOT_IMPLEMENTED") {
+    return res.status(501).json({
+      error: e.message,
+      code: e.code,
+      fn: e.fn,
+      handoff: "See JIRA-HANDOFF.md — implement the marked TODO in lib/jira.js."
+    });
+  }
+  return res.status(502).json({ error: String((e && e.message) || e) });
+}
+
+app.get("/api/jira/status", async (_req, res) => {
+  const configured = jira.isConfigured();
+  if (!configured) {
+    return res.json({
+      configured: false,
+      required_env: jira.REQUIRED_ENV,
+      handoff: "See JIRA-HANDOFF.md."
+    });
+  }
+  try {
+    const ping = await jira.ping();
+    res.json({ configured: true, ping });
+  } catch (e) {
+    res.json({
+      configured: true,
+      ping_ok: false,
+      error: e.message,
+      code: e.code || null,
+      handoff: e.code === "JIRA_NOT_IMPLEMENTED" ? "Stubs still in place — see JIRA-HANDOFF.md." : undefined
+    });
+  }
 });
 
-app.post("/api/refresh/bu/:slug", (req, res) => {
+app.post("/api/refresh", async (_req, res) => {
+  // TODO post-Jira-wireup: iterate every populated project and call refreshProject.
+  // For now we still answer success on the stubbed path so the UI's "Refresh all"
+  // button doesn't appear broken before Jira is wired.
+  if (!jira.isConfigured()) {
+    const seed = loadSeed();
+    return res.json({
+      ok: true,
+      refreshed_at: new Date().toISOString(),
+      generated_at: seed.generated_at,
+      note: "Jira not configured — see JIRA-HANDOFF.md. Returning current seed."
+    });
+  }
+  try {
+    await jira.ping();
+    res.json({ ok: true, refreshed_at: new Date().toISOString(), note: "Per-project refresh not yet looped; call /api/refresh/project/:key per project." });
+  } catch (e) {
+    jiraErrorResponse(res, e);
+  }
+});
+
+app.post("/api/refresh/bu/:slug", async (req, res) => {
   const seed = loadSeed();
   const bu = seed.bus.find(b => b.slug === req.params.slug);
   if (!bu) return res.status(404).json({ error: "BU not found" });
-  res.json({
-    ok: true,
-    bu: bu.slug,
-    refreshed_at: new Date().toISOString(),
-    item_count: bu.item_count,
-    note: "Stub refresh — wire per-BU Jira pull here."
-  });
-});
-
-app.post("/api/refresh/project/:key", (req, res) => {
-  const seed = loadSeed();
-  for (const bu of seed.bus) {
-    const p = bu.projects.find(p => p.key === req.params.key);
-    if (p) return res.json({
+  if (!jira.isConfigured()) {
+    return res.json({
       ok: true,
-      project: p.key,
       bu: bu.slug,
       refreshed_at: new Date().toISOString(),
-      item_count: p.item_count,
-      note: "Stub refresh — wire per-project Jira pull here."
+      item_count: bu.item_count,
+      note: "Jira not configured — see JIRA-HANDOFF.md."
     });
   }
-  res.status(404).json({ error: "Project not found" });
+  // TODO post-wireup: for each project in bu.projects, call refreshProjectInternal.
+  try {
+    await jira.ping();
+    res.json({ ok: true, bu: bu.slug, note: "Per-BU loop pending — implement once searchEpics is live." });
+  } catch (e) {
+    jiraErrorResponse(res, e);
+  }
+});
+
+app.post("/api/refresh/project/:key", async (req, res) => {
+  const projectKey = req.params.key;
+  const seed = loadSeed();
+  const loc = findProject(seed, projectKey);
+  if (!loc) return res.status(404).json({ error: "Project not found" });
+
+  if (!jira.isConfigured()) {
+    return res.json({
+      ok: true,
+      project: loc.project.key,
+      bu: loc.bu.slug,
+      refreshed_at: new Date().toISOString(),
+      item_count: loc.project.item_count,
+      note: "Jira not configured — see JIRA-HANDOFF.md."
+    });
+  }
+
+  try {
+    // Pull Epics + Initiatives. Initiative-type results are stored as
+    // top-level entries; their key becomes the parent_key target for Epics.
+    const incoming = await jira.searchEpics(projectKey, { includeInitiatives: true, limit: 500 });
+
+    // Merge: existing items keep their AI verdicts; new ones land
+    // unscored (verdict "FLAG" until the next ingest pass).
+    const existingByKey = new Map(loc.project.items.map(i => [i.key, i]));
+    const merged = incoming.map(raw => {
+      const prior = existingByKey.get(raw.key);
+      if (prior) {
+        // Keep prior verdict + ai_meta, refresh field values from Jira.
+        return { ...prior, ...raw, project_key: loc.project.key, bu_slug: loc.bu.slug, source_file: "jira" };
+      }
+      return {
+        ...raw,
+        project_key: loc.project.key,
+        bu_slug: loc.bu.slug,
+        source_file: "jira",
+        ai_verdict: "FLAG",
+        ai_gate: null,
+        ai_reason: "FLAG — Newly pulled from Jira; not yet scored. Run an ingest to walk the gates.",
+        child_evidence: "",
+        ai_meta: null
+      };
+    });
+
+    loc.project.items = merged;
+    loc.project.item_count = merged.length;
+    loc.bu.item_count = loc.bu.projects.reduce((n, p) => n + p.items.length, 0);
+    fs.writeFileSync(SEED_FILE, JSON.stringify(seed, null, 2));
+
+    res.json({
+      ok: true,
+      project: loc.project.key,
+      bu: loc.bu.slug,
+      refreshed_at: new Date().toISOString(),
+      item_count: merged.length,
+      pulled: incoming.length
+    });
+  } catch (e) {
+    jiraErrorResponse(res, e);
+  }
 });
 
 // ---- Scoring + ingest ----

@@ -77,17 +77,30 @@ To add another BU's scrub:
 2. Re-run `npm run seed`.
 3. Refresh the browser — the BU tile populates.
 
-## Refresh hooks
+## Jira integration
 
-Three endpoints are stubbed and ready to be wired to Jira later:
+Refresh endpoints are wired through `lib/jira.js`. Five small stubs need
+to be filled in to enable live Jira pulls — see **`JIRA-HANDOFF.md`** for
+the engineer doing that work. Until they're implemented:
+
+- The app runs fully against `data/seed.json` (offline / seed-only mode).
+- `GET /api/jira/status` returns `{configured: false}` when env vars are missing.
+- The refresh buttons return a `note: "Jira not configured"` rather than crashing.
+
+Required env vars (see `.env.example`):
+
+```
+JIRA_BASE_URL=https://ashley-furniture-team.atlassian.net
+JIRA_EMAIL=<service account email>
+JIRA_API_TOKEN=<token from id.atlassian.com>
+```
+
+Refresh endpoints:
 
 - `POST /api/refresh` — global refresh
 - `POST /api/refresh/bu/:slug` — single BU
-- `POST /api/refresh/project/:key` — single project
-
-Today they just acknowledge the request. When you're ready to pull from Jira
-directly, replace the handler bodies in `server.js` with the Jira call and
-rewrite `data/seed.json` for the affected scope.
+- `POST /api/refresh/project/:key` — single project (fully implemented end-to-end once `searchEpics` is live)
+- `GET  /api/jira/status` — auth round-trip check
 
 ## API surface
 
