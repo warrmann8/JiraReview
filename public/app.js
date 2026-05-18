@@ -60,17 +60,55 @@ refreshAllBtn.addEventListener("click", async () => {
 
 // ---- landing: list of BUs ----
 async function renderLanding() {
-  app.innerHTML = `<div class="eyebrow">17 business units · 91 projects</div>
-    <h2 style="margin-top:8px">Business units</h2>
-    <div class="sub" style="color:var(--mid);margin:6px 0 18px;font-size:14px">Each tile is a BU. Populated tiles have scored items ready to review. Empty tiles are placeholders ready for their scrub HTML to be added.</div>
-    <div class="bu-grid" id="bu-grid"></div>`;
   let data;
   try { data = await api("GET", "/api/bus"); }
-  catch (e) { app.innerHTML += `<div class="note">Could not load BUs: ${esc(e.message)}</div>`; return; }
+  catch (e) { app.innerHTML = `<div class="note">Could not load BUs: ${esc(e.message)}</div>`; return; }
   generatedEl.textContent = `seed: ${data.generated_at ? new Date(data.generated_at).toLocaleString() : "—"}`;
 
-  const grid = document.getElementById("bu-grid");
+  // Roll the BU tallies up into a portfolio summary so the landing
+  // page leads with totals instead of just a grid.
+  const totals = { KEEP: 0, STOP: 0, FOLD: 0, FLAG: 0, total: 0, overrides: 0 };
+  let populated = 0;
   for (const bu of data.bus) {
+    const t = bu.tally || {};
+    for (const v of VERDICTS) totals[v] += t[v] || 0;
+    totals.total += t.total || 0;
+    totals.overrides += t.overrides || 0;
+    if ((bu.item_count || 0) > 0) populated++;
+  }
+
+  app.innerHTML = `
+    <div class="eyebrow">portfolio · 17 business units · 91 projects</div>
+    <h2 style="margin-top:6px;margin-bottom:14px">Scrub console</h2>
+
+    <div class="portfolio">
+      <div class="cell"><div class="num">${totals.total}</div><div class="label">Epics scored</div></div>
+      <div class="cell"><div class="num">${populated}<span style="color:var(--low);font-size:18px">/${data.bus.length}</span></div><div class="label">BUs populated</div></div>
+      <div class="cell accent"><div class="num">${totals.overrides}</div><div class="label">Decisions logged</div></div>
+      <div class="cell split">
+        <div class="item"><div class="num" style="color:#b6c7a9">${totals.KEEP}</div><div class="label">Keep</div></div>
+        <div class="item"><div class="num" style="color:#d28d8d">${totals.STOP}</div><div class="label">Stop</div></div>
+        <div class="item"><div class="num" style="color:#e2c39e">${totals.FOLD}</div><div class="label">Fold</div></div>
+        <div class="item"><div class="num" style="color:#a7c5d7">${totals.FLAG}</div><div class="label">Flag</div></div>
+      </div>
+    </div>
+
+    <h2 style="margin-bottom:8px">Business units</h2>
+    <div class="sub" style="color:var(--mid);margin:0 0 16px;font-size:14px">Click a populated BU to walk its Epics. Empty BUs are placeholders — use <b style="color:var(--hi)">Add items…</b> on any BU page to ingest scored Epics.</div>
+    <div class="bu-grid" id="bu-grid"></div>
+  `;
+
+  const grid = document.getElementById("bu-grid");
+
+  // Sort: populated first (by item count desc), then empty.
+  const sorted = data.bus.slice().sort((a, b) => {
+    const ap = (a.item_count || 0) > 0 ? 1 : 0;
+    const bp = (b.item_count || 0) > 0 ? 1 : 0;
+    if (ap !== bp) return bp - ap;
+    return (b.item_count || 0) - (a.item_count || 0);
+  });
+
+  for (const bu of sorted) {
     const t = bu.tally || { KEEP: 0, STOP: 0, FOLD: 0, FLAG: 0, total: 0, overrides: 0 };
     const empty = bu.item_count === 0;
     const counts = VERDICTS.map(v => `<span><b>${t[v] || 0}</b> ${v}</span>`).join("");
@@ -88,7 +126,13 @@ async function renderLanding() {
 }
 
 // ---- BU detail ----
-const filterState = { verdict: null, status: null, project: null, gate: null, initiative: null, search: "" };
+const filterState = { verdict: null, status: null, project: null, gate: null, initiative: null, search: "", quick: null };
+
+const QUICK_FILTERS = [
+  { id: "attention", label: "Needs attention", match: it => it.current_verdict === "FLAG" || (it.ai_meta && it.ai_meta.confidence === "low") },
+  { id: "overrides", label: "My overrides", match: it => !!it.override },
+  { id: "unlinked", label: "Unlinked Epics", match: it => !it.parent_key }
+];
 
 async function renderBu(slug) {
   app.innerHTML = `<div class="crumb"><a href="#/">all business units</a> / <span id="cur"></span></div>
@@ -99,7 +143,13 @@ async function renderBu(slug) {
   document.getElementById("cur").textContent = bu.name;
   generatedEl.textContent = bu.scrubbed_date ? `scrub: ${bu.scrubbed_date}` : `not yet scrubbed`;
 
-  Object.assign(filterState, { verdict: null, status: null, project: null, gate: null, initiative: null, search: "" });
+  Object.assign(filterState, { verdict: null, status: null, project: null, gate: null, initiative: null, search: "", quick: null });
+
+  // Pre-compute which items match each quick filter so chips can show counts.
+  for (const it of bu.projects.flatMap(p => p.items)) {
+    it._qf = new Set();
+    for (const q of QUICK_FILTERS) if (q.match(it)) it._qf.add(q.id);
+  }
 
   document.getElementById("bu-body").innerHTML = renderBuHtml(bu);
   bindBuEvents(bu);
@@ -107,7 +157,11 @@ async function renderBu(slug) {
 
 function renderBuHtml(bu) {
   const t = bu.tally;
-  const projects = bu.projects.filter(p => p.items.length > 0);
+  // Sort populated projects by item count desc so the heaviest project
+  // sits at the top.
+  const projects = bu.projects
+    .filter(p => p.items.length > 0)
+    .sort((a, b) => b.items.length - a.items.length);
   const emptyProjects = bu.projects.filter(p => p.items.length === 0);
   const projectOpts = bu.projects.map(p => `<option value="${esc(p.key)}">${esc(p.key)} — ${esc(p.name)}</option>`).join("");
   const statuses = Array.from(new Set(bu.projects.flatMap(p => p.items.map(i => i.status).filter(Boolean)))).sort();
@@ -144,12 +198,26 @@ function renderBuHtml(bu) {
         <li><div class="q">${esc(q.q || q)}</div>${q.unlocks ? `<div class="unlocks">unlocks · ${esc(q.unlocks)}</div>` : ""}</li>`).join("")}</ol>` : "";
 
   const emptyHtml = emptyProjects.length
-    ? `<div class="note"><b>${emptyProjects.length} project${emptyProjects.length === 1 ? "" : "s"}</b> in this BU have no scored items yet: ${emptyProjects.map(p => `<code>${esc(p.key)}</code>`).join(" ")}. Drop a scrub HTML for these projects and re-seed to populate.</div>`
+    ? `<div class="note"><b>${emptyProjects.length} project${emptyProjects.length === 1 ? "" : "s"}</b> in this BU have no scored Epics yet: ${emptyProjects.map(p => `<code>${esc(p.key)}</code>`).join(" ")}. Use <b>Add items…</b> to ingest Epics for these projects.</div>`
     : "";
 
   const buEmptyHtml = bu.item_count === 0
-    ? `<div class="note"><b>${esc(bu.name)} has no scored items yet.</b> Add a scrub HTML for one of its projects and run <code>npm run seed</code> to populate this BU.</div>`
+    ? `<div class="cta-empty">
+        <h3>${esc(bu.name)} has no scored Epics yet</h3>
+        <p>Ingest Epics for any of this BU's ${bu.projects.length} project${bu.projects.length === 1 ? "" : "s"} (${bu.projects.map(p => p.key).join(", ")}) to start scoring. Single Epic or bulk JSON paste — both work.</p>
+        <button class="mini-btn primary" id="ingestEmptyBu">Add the first Epic</button>
+      </div>`
     : "";
+
+  // Quick-filter chips — compute counts in the calling scope.
+  const allItems = bu.projects.flatMap(p => p.items);
+  const qfCounts = {};
+  for (const q of QUICK_FILTERS) qfCounts[q.id] = allItems.filter(q.match).length;
+  const qfHtml = bu.item_count > 0 ? `
+    <div class="quick-filters">
+      <span class="label">quick</span>
+      ${QUICK_FILTERS.map(q => `<button class="qf" data-qf="${q.id}">${esc(q.label)} <b>${qfCounts[q.id]}</b></button>`).join("")}
+    </div>` : "";
 
   return `
     <h1 style="margin-top:6px">${esc(bu.name)}</h1>
@@ -165,13 +233,15 @@ function renderBuHtml(bu) {
     <div class="rec-strip" id="verdict-chips">
       ${VERDICTS.map(v => `<span class="rec-chip ${v}" data-verdict="${v}"><b>${t[v] || 0}</b>${v}</span>`).join("")}
     </div>
+    ${qfHtml}
     <div class="toolbar">
       <div class="filters">
         <select id="f-initiative"><option value="">All initiatives</option>${initiativeOpts}</select>
         <select id="f-project"><option value="">All projects</option>${projectOpts}</select>
         <select id="f-status"><option value="">All statuses</option>${statusOpts}</select>
         <select id="f-gate"><option value="">All gates</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>
-        <input class="q" id="f-q" placeholder="search key / summary / reason" size="34">
+        <span class="search-wrap"><input class="q" id="f-q" placeholder="search key, summary, reason…" size="34"><span class="kbd">/</span></span>
+        <span class="filter-count" id="filter-count"></span>
       </div>
       <div class="filters">
         <button class="mini-btn" id="resetFilters">Reset</button>
@@ -180,24 +250,37 @@ function renderBuHtml(bu) {
       </div>
     </div>
     ${emptyHtml}
-    <div id="projects">${projects.map(renderProject).join("")}</div>
+    <div id="projects">${projects.map((p, i) => renderProject(p, i === 0)).join("")}</div>
+    <div id="empty-filter" class="empty-filter" style="display:none">
+      <b>No Epics match the current filters</b>
+      Try adjusting a filter or clearing the search.
+      <div><button class="mini-btn" data-reset-filters>Reset all filters</button></div>
+    </div>
     ${signalsHtml}
     ${questionsHtml}
   `;
 }
 
-function renderProject(p) {
+function renderProject(p, openByDefault) {
   const tally = p.items.reduce((a, i) => { a[i.current_verdict] = (a[i.current_verdict] || 0) + 1; a.total++; return a; }, { KEEP: 0, STOP: 0, FOLD: 0, FLAG: 0, total: 0 });
+  const collapsed = openByDefault ? "" : " collapsed";
   return `
-    <section class="project" data-project="${esc(p.key)}">
+    <section class="project${collapsed}" data-project="${esc(p.key)}">
       <header class="proj">
         <div class="proj-left">
+          <span class="chev">▶</span>
           <span class="pkey">${esc(p.key)}</span>
           <span class="pname">${esc(p.name)}</span>
           <span class="pcat">${esc(p.category)}</span>
         </div>
         <div class="proj-right">
-          <span class="pcount">${p.items.length} items</span>
+          <span class="pcount"><b>${p.items.length}</b> Epic${p.items.length === 1 ? "" : "s"}</span>
+          <span class="mini-tally">
+            <span class="K"><b>${tally.KEEP}</b>K</span>
+            <span class="S"><b>${tally.STOP}</b>S</span>
+            <span class="F"><b>${tally.FOLD}</b>F</span>
+            <span class="G"><b>${tally.FLAG}</b>!</span>
+          </span>
           ${verdictBar(tally)}
           <button class="mini-btn refresh-proj" data-key="${esc(p.key)}">Refresh</button>
         </div>
@@ -206,7 +289,7 @@ function renderProject(p) {
         <table class="items">
           <thead><tr>
             <th class="col-key">Key</th>
-            <th class="col-summary">Summary</th>
+            <th class="col-summary">Summary &amp; parent Initiative</th>
             <th class="col-status">Status</th>
             <th class="col-prio">Priority</th>
             <th class="col-verdict">Verdict</th>
@@ -224,9 +307,10 @@ function renderProject(p) {
 function renderItemRow(it) {
   const url = it.url || `https://ashley-furniture-team.atlassian.net/browse/${encodeURIComponent(it.key)}`;
   const dot = it.override ? `<span class="override-dot" title="overridden"></span>` : "";
+  const qfAttr = it._qf ? Array.from(it._qf).join(",") : "";
   return `
-    <tr data-key="${esc(it.key)}" data-verdict="${esc(it.current_verdict)}" data-status="${esc(it.status || "")}" data-gate="${esc(it.ai_gate || "")}" data-project="${esc(it.project_key)}" data-initiative="${esc(it.parent_key || "__unlinked__")}">
-      <td><a class="key" href="${esc(url)}" target="_blank" rel="noopener">${esc(it.key)}</a></td>
+    <tr data-key="${esc(it.key)}" data-verdict="${esc(it.current_verdict)}" data-status="${esc(it.status || "")}" data-gate="${esc(it.ai_gate || "")}" data-project="${esc(it.project_key)}" data-initiative="${esc(it.parent_key || "__unlinked__")}" data-qf="${esc(qfAttr)}">
+      <td><a class="key" href="${esc(url)}" target="_blank" rel="noopener" data-noopen>${esc(it.key)}</a></td>
       <td>
         <div class="summary">${esc(it.summary || "")}</div>
         ${it.parent_key
@@ -241,8 +325,8 @@ function renderItemRow(it) {
       <td>${esc(it.override ? it.override.reason || it.ai_reason : it.ai_reason || "")}</td>
       <td>
         <div class="actions">
-          ${VERDICTS.map(v => `<button class="act ${v}" data-action="set" data-verdict="${v}">${v === "STOP" ? "Kill" : v}</button>`).join("")}
-          <button class="act hist" data-action="open">…</button>
+          ${VERDICTS.map(v => `<button class="act ${v}" data-action="set" data-verdict="${v}" title="Set ${v}">${v === "STOP" ? "Kill" : v}</button>`).join("")}
+          <button class="act hist" data-action="open" title="Open decision modal">…</button>
         </div>
       </td>
     </tr>
@@ -271,30 +355,59 @@ function bindBuEvents(bu) {
   fGate.addEventListener("change", () => { filterState.gate = fGate.value || null; applyFilters(); });
   fQ.addEventListener("input", () => { filterState.search = fQ.value.toLowerCase(); applyFilters(); });
   document.getElementById("resetFilters").addEventListener("click", () => {
-    Object.assign(filterState, { verdict: null, status: null, project: null, gate: null, initiative: null, search: "" });
+    Object.assign(filterState, { verdict: null, status: null, project: null, gate: null, initiative: null, search: "", quick: null });
     fInit.value = ""; fProj.value = ""; fStatus.value = ""; fGate.value = ""; fQ.value = "";
     document.querySelectorAll(".rec-chip[data-verdict]").forEach(c => c.classList.remove("active"));
+    document.querySelectorAll(".qf").forEach(c => c.classList.remove("active"));
     applyFilters();
   });
 
+  // Quick filter chips.
+  document.querySelectorAll(".qf").forEach(chip => {
+    chip.addEventListener("click", () => {
+      const id = chip.dataset.qf;
+      filterState.quick = filterState.quick === id ? null : id;
+      document.querySelectorAll(".qf").forEach(c => c.classList.toggle("active", c.dataset.qf === filterState.quick));
+      applyFilters();
+    });
+  });
+
+  const setLoading = (btn, label) => {
+    btn.disabled = true;
+    btn.dataset.origText = btn.textContent;
+    btn.innerHTML = `<span class="spinner-sm"></span> ${esc(label)}`;
+  };
+  const clearLoading = (btn) => {
+    btn.disabled = false;
+    if (btn.dataset.origText) btn.textContent = btn.dataset.origText;
+  };
+
   document.getElementById("refreshBu").addEventListener("click", async (e) => {
-    e.target.textContent = "Refreshing...";
+    setLoading(e.target, "Refreshing");
     try { await api("POST", `/api/refresh/bu/${encodeURIComponent(bu.slug)}`); }
-    finally { e.target.textContent = "Refresh BU"; }
+    catch (err) { /* fall through to clearLoading */ }
+    finally { clearLoading(e.target); }
     renderBu(bu.slug);
   });
 
   document.getElementById("ingestBu").addEventListener("click", () => openIngestModal(bu));
+  const ingestEmpty = document.getElementById("ingestEmptyBu");
+  if (ingestEmpty) ingestEmpty.addEventListener("click", () => openIngestModal(bu));
 
   document.querySelectorAll(".refresh-proj").forEach(b => {
     b.addEventListener("click", async (e) => {
       e.stopPropagation();
-      const k = b.dataset.key;
-      b.textContent = "...";
-      try { await api("POST", `/api/refresh/project/${encodeURIComponent(k)}`); }
-      finally { b.textContent = "Refresh"; }
+      setLoading(b, "Refreshing");
+      try { await api("POST", `/api/refresh/project/${encodeURIComponent(b.dataset.key)}`); }
+      catch (err) { /* fall through */ }
+      finally { clearLoading(b); }
       renderBu(bu.slug);
     });
+  });
+
+  // Reset buttons in the empty-filter pane reuse the toolbar's reset action.
+  document.querySelectorAll("[data-reset-filters]").forEach(b => {
+    b.addEventListener("click", () => document.getElementById("resetFilters").click());
   });
 
   // Collapse project sections
@@ -305,32 +418,48 @@ function bindBuEvents(bu) {
     });
   });
 
-  // Row actions
+  // Row actions: click anywhere on the row (except the Jira-link or the
+  // hover-revealed verdict buttons) to open the decision modal.
   document.querySelectorAll("table.items tbody tr").forEach(tr => {
-    tr.addEventListener("click", async (e) => {
-      const btn = e.target.closest("button[data-action]");
-      if (!btn) return;
+    tr.addEventListener("click", (e) => {
       const key = tr.dataset.key;
-      if (btn.dataset.action === "set") {
-        // Quick-set: opens modal pre-filled to confirm reason
-        openDecisionModal(key, btn.dataset.verdict, bu);
-      } else if (btn.dataset.action === "open") {
-        openDecisionModal(key, null, bu);
+      const btn = e.target.closest("button[data-action]");
+      if (btn) {
+        if (btn.dataset.action === "set") openDecisionModal(key, btn.dataset.verdict, bu);
+        else if (btn.dataset.action === "open") openDecisionModal(key, null, bu);
+        return;
       }
+      // Bare row click. Ignore if user clicked the external Jira link.
+      if (e.target.closest("[data-noopen]")) return;
+      openDecisionModal(key, null, bu);
     });
   });
 
   applyFilters();
 }
 
+// "/" focuses search; only when not already typing in an input.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
+  const t = e.target;
+  const inField = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT");
+  if (inField) return;
+  const q = document.getElementById("f-q");
+  if (q) { e.preventDefault(); q.focus(); q.select(); }
+});
+
 function applyFilters() {
   const rows = document.querySelectorAll("table.items tbody tr");
+  let total = 0;
+  let shown = 0;
   rows.forEach(tr => {
+    total++;
     const v = tr.dataset.verdict;
     const s = tr.dataset.status;
     const g = tr.dataset.gate;
     const p = tr.dataset.project;
     const init = tr.dataset.initiative;
+    const qf = (tr.dataset.qf || "").split(",").filter(Boolean);
     const text = tr.textContent.toLowerCase();
     let show = true;
     if (filterState.verdict && v !== filterState.verdict) show = false;
@@ -338,14 +467,31 @@ function applyFilters() {
     if (filterState.gate && String(g) !== String(filterState.gate)) show = false;
     if (filterState.project && p !== filterState.project) show = false;
     if (filterState.initiative && init !== filterState.initiative) show = false;
+    if (filterState.quick && !qf.includes(filterState.quick)) show = false;
     if (filterState.search && !text.includes(filterState.search)) show = false;
     tr.style.display = show ? "" : "none";
+    if (show) shown++;
   });
-  // Hide project sections with zero visible rows
+
+  // Hide project sections that have zero visible rows. Auto-expand any
+  // section that has visible rows while a filter is active, so users
+  // don't have to expand each project to see their hits.
+  const filtering = !!(filterState.verdict || filterState.status || filterState.gate || filterState.project || filterState.initiative || filterState.quick || filterState.search);
   document.querySelectorAll(".project").forEach(sec => {
     const visible = sec.querySelectorAll("table.items tbody tr:not([style*='display: none'])").length;
     sec.style.display = visible === 0 ? "none" : "";
+    if (filtering && visible > 0) sec.classList.remove("collapsed");
   });
+
+  // Update filter count + empty state.
+  const fc = document.getElementById("filter-count");
+  if (fc) {
+    fc.innerHTML = filtering
+      ? `<b>${shown}</b> of ${total} shown`
+      : `${total} Epics`;
+  }
+  const empty = document.getElementById("empty-filter");
+  if (empty) empty.style.display = (filtering && shown === 0) ? "" : "none";
 }
 
 // ---- modal ----
@@ -364,7 +510,11 @@ async function openDecisionModal(key, preselect, bu) {
 
     <label>Set verdict</label>
     <div class="verdict-row" id="v-row">
-      ${VERDICTS.map(v => `<button data-v="${v}" class="${v === chosen ? "selected" : ""}">${v === "STOP" ? "STOP / KILL" : v}</button>`).join("")}
+      ${VERDICTS.map(v => {
+        const label = v === "STOP" ? "STOP / KILL" : v;
+        const k = v[0]; // K / S / F / L
+        return `<button data-v="${v}" data-key="${k}" class="${v === chosen ? "selected" : ""}">${label}<span class="k">${k}</span></button>`;
+      }).join("")}
     </div>
 
     <label>Reason (optional but recommended)</label>
@@ -374,6 +524,12 @@ async function openDecisionModal(key, preselect, bu) {
       ${item.override ? `<button class="mini-btn" id="clear">Clear override</button>` : ""}
       <button class="mini-btn" id="cancel">Cancel</button>
       <button class="mini-btn primary" id="save">Save decision</button>
+    </div>
+
+    <div class="footer-hint">
+      <span><kbd>K</kbd>/<kbd>S</kbd>/<kbd>F</kbd>/<kbd>L</kbd> set verdict</span>
+      <span><kbd>⌘</kbd>+<kbd>Enter</kbd> save</span>
+      <span><kbd>Esc</kbd> close</span>
     </div>
 
     ${renderAiBlock(item.ai_meta)}
@@ -391,14 +547,38 @@ async function openDecisionModal(key, preselect, bu) {
   `;
   modal.classList.add("open");
 
+  const reasonEl = modalBody.querySelector("#reason");
+  const saveBtn = modalBody.querySelector("#save");
+  const setChosen = (v) => {
+    chosen = v;
+    modalBody.querySelectorAll("#v-row button").forEach(x => x.classList.toggle("selected", x.dataset.v === chosen));
+  };
+
   modalBody.querySelectorAll("#v-row button").forEach(b => {
-    b.addEventListener("click", () => {
-      chosen = b.dataset.v;
-      modalBody.querySelectorAll("#v-row button").forEach(x => x.classList.toggle("selected", x.dataset.v === chosen));
-    });
+    b.addEventListener("click", () => setChosen(b.dataset.v));
   });
   modalBody.querySelector("#cancel").addEventListener("click", closeModal);
   modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); }, { once: true });
+
+  // Keyboard: K/S/F/L pick verdict, Cmd/Ctrl+Enter saves. Skip single-letter
+  // shortcuts while the textarea is focused so the user can type freely.
+  const onKey = (e) => {
+    if (!modal.classList.contains("open")) {
+      document.removeEventListener("keydown", onKey);
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      saveBtn.click();
+      return;
+    }
+    if (document.activeElement === reasonEl) return;
+    const k = e.key.toUpperCase();
+    const found = VERDICTS.find(v => v[0] === k);
+    if (found) { e.preventDefault(); setChosen(found); }
+  };
+  document.addEventListener("keydown", onKey);
+  setTimeout(() => { if (reasonEl) reasonEl.focus(); }, 30);
 
   modalBody.querySelector("#save").addEventListener("click", async () => {
     if (!chosen) { alert("Pick a verdict."); return; }
