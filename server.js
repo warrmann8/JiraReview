@@ -347,6 +347,29 @@ function persistScoredItem(item, scored) {
   return { skipped: false, key: item.key, stored };
 }
 
+// Distinct Initiatives observed in a BU's items. Used by the filter UI.
+app.get("/api/bu/:slug/initiatives", (req, res) => {
+  const seed = loadSeed();
+  const bu = seed.bus.find(b => b.slug === req.params.slug);
+  if (!bu) return res.status(404).json({ error: "BU not found" });
+  const byKey = new Map();
+  for (const project of bu.projects) {
+    for (const item of project.items) {
+      const k = item.parent_key || "";
+      if (!byKey.has(k)) {
+        byKey.set(k, { key: k, summary: item.parent_summary || "", count: 0 });
+      }
+      byKey.get(k).count += 1;
+    }
+  }
+  const initiatives = Array.from(byKey.values()).sort((a, b) => {
+    if (!a.key && b.key) return 1;
+    if (a.key && !b.key) return -1;
+    return b.count - a.count;
+  });
+  res.json({ bu: bu.slug, initiatives });
+});
+
 app.get("/api/scorer/info", (_req, res) => {
   try {
     res.json({
@@ -386,6 +409,11 @@ app.post("/api/ingest/project/:key/single", async (req, res) => {
   if (!isEpicLevel(raw.type)) {
     return res.status(400).json({
       error: `Scoring is Epic-level only. Item type was "${raw.type || "<unset>"}". Allowed: ${EPIC_LEVEL_TYPES.join(", ")}.`
+    });
+  }
+  if (String(raw.type).toLowerCase() === "epic" && !raw.parent_key) {
+    return res.status(400).json({
+      error: `Epic ${raw.key || ""} needs a parent Initiative. Set parent_key (and parent_summary).`
     });
   }
   const seed = loadSeed();
@@ -428,6 +456,14 @@ app.post("/api/ingest/project/:key/bulk", async (req, res) => {
           ok: true,
           skipped: true,
           reason: `not Epic-level (type="${(raw && raw.type) || "<unset>"}")`
+        });
+        continue;
+      }
+      if (String(raw.type).toLowerCase() === "epic" && !raw.parent_key) {
+        results.push({
+          key: raw.key,
+          ok: false,
+          error: "Epic missing parent_key (must link to a parent Initiative)"
         });
         continue;
       }

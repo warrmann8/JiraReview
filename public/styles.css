@@ -101,6 +101,8 @@ table.items .col-actions{width:170px}
 table.items .key{font:12px "JetBrains Mono",monospace;color:var(--hi)}
 table.items .summary{color:var(--hi)}
 table.items .parent-tag{font:10px "JetBrains Mono",monospace;color:var(--mid);margin-top:4px}
+table.items .parent-tag b{color:var(--accent);font-weight:500;letter-spacing:.04em}
+table.items .parent-tag.unlinked{color:var(--low);font-style:italic}
 table.items .child-evidence{font:11px "JetBrains Mono",monospace;color:var(--mid);margin-top:6px;line-height:1.5}
 .gate{display:inline-block;border:1px solid var(--line);padding:2px 7px;font:10px "JetBrains Mono",monospace;color:var(--mid)}
 .pill{display:inline-block;padding:3px 8px;border-radius:2px;font:10px "JetBrains Mono",monospace;letter-spacing:.12em;text-transform:uppercase;border:1px solid var(--line);color:var(--hi);background:var(--bg3);white-space:nowrap}

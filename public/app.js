@@ -88,7 +88,7 @@ async function renderLanding() {
 }
 
 // ---- BU detail ----
-const filterState = { verdict: null, status: null, project: null, gate: null, search: "" };
+const filterState = { verdict: null, status: null, project: null, gate: null, initiative: null, search: "" };
 
 async function renderBu(slug) {
   app.innerHTML = `<div class="crumb"><a href="#/">all business units</a> / <span id="cur"></span></div>
@@ -99,7 +99,7 @@ async function renderBu(slug) {
   document.getElementById("cur").textContent = bu.name;
   generatedEl.textContent = bu.scrubbed_date ? `scrub: ${bu.scrubbed_date}` : `not yet scrubbed`;
 
-  Object.assign(filterState, { verdict: null, status: null, project: null, gate: null, search: "" });
+  Object.assign(filterState, { verdict: null, status: null, project: null, gate: null, initiative: null, search: "" });
 
   document.getElementById("bu-body").innerHTML = renderBuHtml(bu);
   bindBuEvents(bu);
@@ -112,6 +112,25 @@ function renderBuHtml(bu) {
   const projectOpts = bu.projects.map(p => `<option value="${esc(p.key)}">${esc(p.key)} — ${esc(p.name)}</option>`).join("");
   const statuses = Array.from(new Set(bu.projects.flatMap(p => p.items.map(i => i.status).filter(Boolean)))).sort();
   const statusOpts = statuses.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join("");
+
+  // Initiatives observed in this BU. Sort by count desc; "(unlinked)" at the tail.
+  const initMap = new Map();
+  for (const p of bu.projects) for (const it of p.items) {
+    const k = it.parent_key || "";
+    if (!initMap.has(k)) initMap.set(k, { key: k, summary: it.parent_summary || "", count: 0 });
+    initMap.get(k).count += 1;
+  }
+  const initiatives = Array.from(initMap.values()).sort((a, b) => {
+    if (!a.key && b.key) return 1;
+    if (a.key && !b.key) return -1;
+    return b.count - a.count;
+  });
+  const initiativeOpts = initiatives.map(i => {
+    const label = i.key
+      ? `${i.key}${i.summary ? " — " + i.summary : ""} (${i.count})`
+      : `(unlinked) (${i.count})`;
+    return `<option value="${esc(i.key || "__unlinked__")}">${esc(label)}</option>`;
+  }).join("");
 
   const signalsHtml = bu.cross_project_signals && bu.cross_project_signals.length
     ? `<h2>Cross-project signals</h2><div class="signals">${bu.cross_project_signals.map(s => `
@@ -148,6 +167,7 @@ function renderBuHtml(bu) {
     </div>
     <div class="toolbar">
       <div class="filters">
+        <select id="f-initiative"><option value="">All initiatives</option>${initiativeOpts}</select>
         <select id="f-project"><option value="">All projects</option>${projectOpts}</select>
         <select id="f-status"><option value="">All statuses</option>${statusOpts}</select>
         <select id="f-gate"><option value="">All gates</option><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option></select>
@@ -205,11 +225,13 @@ function renderItemRow(it) {
   const url = it.url || `https://ashley-furniture-team.atlassian.net/browse/${encodeURIComponent(it.key)}`;
   const dot = it.override ? `<span class="override-dot" title="overridden"></span>` : "";
   return `
-    <tr data-key="${esc(it.key)}" data-verdict="${esc(it.current_verdict)}" data-status="${esc(it.status || "")}" data-gate="${esc(it.ai_gate || "")}" data-project="${esc(it.project_key)}">
+    <tr data-key="${esc(it.key)}" data-verdict="${esc(it.current_verdict)}" data-status="${esc(it.status || "")}" data-gate="${esc(it.ai_gate || "")}" data-project="${esc(it.project_key)}" data-initiative="${esc(it.parent_key || "__unlinked__")}">
       <td><a class="key" href="${esc(url)}" target="_blank" rel="noopener">${esc(it.key)}</a></td>
       <td>
         <div class="summary">${esc(it.summary || "")}</div>
-        ${it.parent_key ? `<div class="parent-tag">↳ ${esc(it.parent_key)} · ${esc(it.parent_summary || "")}</div>` : ""}
+        ${it.parent_key
+          ? `<div class="parent-tag">↳ <b>${esc(it.parent_key)}</b>${it.parent_summary ? " · " + esc(it.parent_summary) : ""}</div>`
+          : `<div class="parent-tag unlinked">↳ no parent Initiative</div>`}
         ${it.child_evidence ? `<div class="child-evidence">${esc(it.child_evidence)}</div>` : ""}
       </td>
       <td>${esc(it.status || "")}</td>
@@ -238,17 +260,19 @@ function bindBuEvents(bu) {
     });
   });
 
+  const fInit = document.getElementById("f-initiative");
   const fProj = document.getElementById("f-project");
   const fStatus = document.getElementById("f-status");
   const fGate = document.getElementById("f-gate");
   const fQ = document.getElementById("f-q");
+  fInit.addEventListener("change", () => { filterState.initiative = fInit.value || null; applyFilters(); });
   fProj.addEventListener("change", () => { filterState.project = fProj.value || null; applyFilters(); });
   fStatus.addEventListener("change", () => { filterState.status = fStatus.value || null; applyFilters(); });
   fGate.addEventListener("change", () => { filterState.gate = fGate.value || null; applyFilters(); });
   fQ.addEventListener("input", () => { filterState.search = fQ.value.toLowerCase(); applyFilters(); });
   document.getElementById("resetFilters").addEventListener("click", () => {
-    Object.assign(filterState, { verdict: null, status: null, project: null, gate: null, search: "" });
-    fProj.value = ""; fStatus.value = ""; fGate.value = ""; fQ.value = "";
+    Object.assign(filterState, { verdict: null, status: null, project: null, gate: null, initiative: null, search: "" });
+    fInit.value = ""; fProj.value = ""; fStatus.value = ""; fGate.value = ""; fQ.value = "";
     document.querySelectorAll(".rec-chip[data-verdict]").forEach(c => c.classList.remove("active"));
     applyFilters();
   });
@@ -306,12 +330,14 @@ function applyFilters() {
     const s = tr.dataset.status;
     const g = tr.dataset.gate;
     const p = tr.dataset.project;
+    const init = tr.dataset.initiative;
     const text = tr.textContent.toLowerCase();
     let show = true;
     if (filterState.verdict && v !== filterState.verdict) show = false;
     if (filterState.status && s !== filterState.status) show = false;
     if (filterState.gate && String(g) !== String(filterState.gate)) show = false;
     if (filterState.project && p !== filterState.project) show = false;
+    if (filterState.initiative && init !== filterState.initiative) show = false;
     if (filterState.search && !text.includes(filterState.search)) show = false;
     tr.style.display = show ? "" : "none";
   });
@@ -463,8 +489,8 @@ async function openIngestModal(bu) {
         </select>
         <label>Status</label><input id="ing-status" placeholder="In Progress / Backlog / Discovery">
         <label>Priority</label><input id="ing-priority" placeholder="High / Medium / Low">
-        <label>Parent initiative</label><input id="ing-parent-key" placeholder="AFIINIT-31">
-        <label>Parent summary</label><input id="ing-parent-sum" placeholder="Initiative title">
+        <label>Parent Initiative key *</label><input id="ing-parent-key" placeholder="AFIINIT-31 (required for Epics)">
+        <label>Parent Initiative summary *</label><input id="ing-parent-sum" placeholder="e.g. Next-Gen Supply Chain Planning Transformation">
         <label>Labels</label><input id="ing-labels" placeholder="comma,separated">
         <label>Assignee</label><input id="ing-assignee">
         <label>Updated</label><input id="ing-updated" placeholder="2026-05-01 or 22d ago">
@@ -473,7 +499,7 @@ async function openIngestModal(bu) {
     </div>
 
     <div id="tab-bulk" style="display:none">
-      <label class="eyebrow" style="display:block;margin:6px 0">Paste a JSON array of Epics (max 200). Each item must have <code>type: "Epic"</code> or <code>"Initiative"</code> — others are skipped. Only <code>key</code> and <code>summary</code> are required. Bulk uses lite output mode.</label>
+      <label class="eyebrow" style="display:block;margin:6px 0">Paste a JSON array of Epics (max 200). Each item must have <code>type: "Epic"</code> or <code>"Initiative"</code> — others are skipped. Required per item: <code>key</code>, <code>summary</code>, and <code>parent_key</code> (Epics only). <code>parent_summary</code> recommended. Bulk uses lite output mode.</label>
       <textarea id="ing-bulk" style="width:100%;min-height:180px;background:var(--bg3);border:1px solid var(--line);color:var(--hi);padding:10px;font:12px JetBrains Mono,monospace" placeholder='[{"key":"DSI-9001","summary":"...","type":"Epic","status":"Backlog","description":"..."}]'></textarea>
     </div>
 
@@ -494,6 +520,21 @@ async function openIngestModal(bu) {
     modalBody.querySelector("#tab-single").style.display = activeTab === "single" ? "" : "none";
     modalBody.querySelector("#tab-bulk").style.display = activeTab === "bulk" ? "" : "none";
   }));
+
+  // Initiatives don't need a parent — they ARE the parent. Disable those
+  // inputs when the user picks Initiative.
+  const typeSel = modalBody.querySelector("#ing-type");
+  const pKey = modalBody.querySelector("#ing-parent-key");
+  const pSum = modalBody.querySelector("#ing-parent-sum");
+  const syncParentFields = () => {
+    const isInit = typeSel.value === "Initiative";
+    pKey.disabled = isInit; pSum.disabled = isInit;
+    if (isInit) { pKey.value = ""; pSum.value = ""; }
+    pKey.placeholder = isInit ? "(N/A for Initiative)" : "AFIINIT-31 (required for Epics)";
+    pSum.placeholder = isInit ? "(N/A for Initiative)" : "e.g. Next-Gen Supply Chain Planning Transformation";
+  };
+  typeSel.addEventListener("change", syncParentFields);
+  syncParentFields();
 
   modalBody.querySelector("#ing-cancel").addEventListener("click", () => { closeModal(); renderBu(bu.slug); });
 
@@ -518,6 +559,10 @@ async function openIngestModal(bu) {
         description: modalBody.querySelector("#ing-desc").value.trim()
       };
       if (!item.key || !item.summary) { out.innerHTML = `<span class="err">Key and summary are required.</span>`; return; }
+      if (item.type === "Epic" && !item.parent_key) {
+        out.innerHTML = `<span class="err">Every Epic must link to a parent Initiative. Fill in the parent Initiative key (and summary), or change Type to Initiative.</span>`;
+        return;
+      }
       items = [item];
     } else {
       try {
