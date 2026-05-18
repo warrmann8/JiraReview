@@ -4,3 +4,7 @@ npm-debug.log
 .env
 .vscode/
 .idea/
+
+# Per-user runtime state (overrides + audit log). Regenerate by using the app.
+data/state.json
+data/decisions.jsonl
