@@ -173,6 +173,11 @@ main{position:relative;z-index:1;flex:1;min-width:0;max-width:1880px;margin:0 au
 .quick-filters .qf:hover{color:var(--hi);border-color:var(--accent)}
 .quick-filters .qf.active{color:var(--accent);border-color:var(--accent);background:rgba(212,165,116,.08)}
 .quick-filters .qf b{color:var(--hi);font-family:Fraunces,Georgia,serif;font-weight:400;margin-left:5px}
+/* "Decided" chip leads with a star so it reads as the affirmative-action filter. */
+.quick-filters .qf[data-qf="decided"]:before{content:"★ ";color:var(--accent);letter-spacing:0}
+.quick-filters .qf[data-qf="decided"].active{background:rgba(212,165,116,.16);border-color:var(--accent);color:var(--hi)}
+
+.metric.is-accent .num{color:var(--accent)}
 
 .toolbar{position:sticky;top:0;z-index:5;background:rgba(10,11,13,.94);backdrop-filter:blur(8px);display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:12px 0;margin-top:18px}
 .filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
@@ -225,9 +230,18 @@ input.q{padding-right:38px;background-image:linear-gradient(transparent,transpar
 table.items{width:100%;border-collapse:collapse;table-layout:fixed;background:transparent}
 table.items thead{background:var(--bg3)}
 table.items th{font:10px "JetBrains Mono",monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);text-align:left;padding:10px 12px;border-bottom:1px solid var(--line)}
-table.items td{padding:12px;font-size:13px;vertical-align:top;border-bottom:1px solid var(--line2);color:var(--text);overflow-wrap:anywhere;line-height:1.45}
+table.items td{padding:12px;font-size:13px;vertical-align:top;border-bottom:1px solid var(--line2);color:var(--text);overflow-wrap:anywhere;line-height:1.45;position:relative}
 table.items tbody tr{cursor:pointer;transition:background .12s ease}
 table.items tbody tr:hover{background:rgba(212,165,116,.06)}
+/* A row carrying a human decision. Left accent border + faint tint so the
+   eye can scan a page of items and instantly see what's been ruled on. */
+table.items tbody tr.has-decision{background:rgba(212,165,116,.045)}
+table.items tbody tr.has-decision:hover{background:rgba(212,165,116,.10)}
+table.items tbody tr.has-decision td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
+.decided-by{font:9px "JetBrains Mono",monospace;letter-spacing:.10em;text-transform:uppercase;color:var(--accent);margin-top:6px;display:flex;align-items:center;gap:4px}
+.decided-by:before{content:"★";color:var(--accent)}
+.pill.is-override{font-weight:600;letter-spacing:.18em}
+.pill.is-override:after{content:" ★";color:var(--accent);font-weight:400;margin-left:1px}
 table.items .col-key{width:120px}
 table.items .col-summary{width:auto}
 table.items .col-status{width:90px}
@@ -251,14 +265,21 @@ table.items .child-evidence{font:11px "JetBrains Mono",monospace;color:var(--mid
 .override-dot{display:inline-block;width:6px;height:6px;background:var(--accent);border-radius:50%;margin-left:6px;vertical-align:middle}
 
 .actions{display:flex;gap:4px;flex-wrap:wrap;opacity:.35;transition:opacity .14s ease}
-table.items tbody tr:hover .actions,table.items tbody tr:focus-within .actions{opacity:1}
-.act{font:9px "JetBrains Mono",monospace;letter-spacing:.12em;text-transform:uppercase;border:1px solid var(--line);background:var(--bg2);color:var(--mid);padding:4px 7px;cursor:pointer;border-radius:2px;transition:all .12s ease}
+table.items tbody tr:hover .actions,table.items tbody tr:focus-within .actions,table.items tbody tr.has-decision .actions{opacity:1}
+.act{font:9px "JetBrains Mono",monospace;letter-spacing:.12em;text-transform:uppercase;border:1px solid var(--line);background:var(--bg2);color:var(--mid);padding:4px 7px;cursor:pointer;border-radius:2px;transition:all .12s ease;position:relative}
 .act:hover{color:var(--hi)}
 .act.KEEP:hover{border-color:var(--keep);color:#b6c7a9;background:rgba(125,155,110,.10)}
 .act.STOP:hover{border-color:var(--stop);color:#d28d8d;background:rgba(184,92,92,.10)}
 .act.FOLD:hover{border-color:var(--fold);color:#e2c39e;background:rgba(212,165,116,.10)}
 .act.FLAG:hover{border-color:var(--flag);color:#a7c5d7;background:rgba(107,155,184,.10)}
 .act.hist:hover{border-color:var(--accent);color:var(--accent)}
+/* "is-current" = your decision matched this verdict. Persistent fill so
+   reviewers can see at a glance which choice they made on each row. */
+.act.is-current{font-weight:600;box-shadow:inset 0 -2px 0 var(--accent)}
+.act.KEEP.is-current{border-color:var(--keep);color:#cad7bf;background:rgba(125,155,110,.18)}
+.act.STOP.is-current{border-color:var(--stop);color:#e3a9a9;background:rgba(184,92,92,.18)}
+.act.FOLD.is-current{border-color:var(--fold);color:#efd3b1;background:rgba(212,165,116,.20)}
+.act.FLAG.is-current{border-color:var(--flag);color:#bfd6e2;background:rgba(107,155,184,.18)}
 .click-hint{font:9px "JetBrains Mono",monospace;color:var(--low);letter-spacing:.12em;text-transform:uppercase;opacity:0;transition:opacity .14s ease}
 table.items tbody tr:hover .click-hint{opacity:.6}
 

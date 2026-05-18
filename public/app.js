@@ -307,9 +307,10 @@ async function renderLanding() {
 const filterState = { verdict: null, status: null, project: null, gate: null, initiative: null, search: "", quick: null };
 
 const QUICK_FILTERS = [
-  { id: "attention", label: "Needs attention", match: it => it.current_verdict === "FLAG" || (it.ai_meta && it.ai_meta.confidence === "low") },
-  { id: "overrides", label: "My overrides", match: it => !!it.override },
-  { id: "unlinked", label: "Unlinked Epics", match: it => !it.parent_key }
+  { id: "decided",   label: "Decided",          match: it => !!it.override },
+  { id: "ai-only",   label: "AI verdict only",  match: it => !it.override },
+  { id: "attention", label: "Needs attention",  match: it => it.current_verdict === "FLAG" || (it.ai_meta && it.ai_meta.confidence === "low") },
+  { id: "unlinked",  label: "Unlinked Epics",   match: it => !it.parent_key }
 ];
 
 async function renderBu(slug) {
@@ -409,7 +410,7 @@ function renderBuHtml(bu) {
     <div class="metric-strip">
       <div class="metric"><div class="num">${t.total}</div><div class="label">Items scored</div></div>
       <div class="metric"><div class="num">${bu.projects.length}</div><div class="label">Projects</div></div>
-      <div class="metric"><div class="num">${t.overrides}</div><div class="label">Overrides logged</div></div>
+      <div class="metric ${t.overrides ? "is-accent" : ""}"><div class="num">${t.overrides}</div><div class="label">Decisions made</div></div>
       <div class="metric"><div class="num">${projects.length}</div><div class="label">Populated projects</div></div>
     </div>
     <div class="rec-strip" id="verdict-chips">
@@ -488,10 +489,12 @@ function renderProject(p, openByDefault) {
 
 function renderItemRow(it) {
   const url = it.url || `https://ashley-furniture-team.atlassian.net/browse/${encodeURIComponent(it.key)}`;
-  const dot = it.override ? `<span class="override-dot" title="overridden"></span>` : "";
+  const overridden = !!it.override;
+  const decidedVerdict = overridden ? it.override.verdict : null;
   const qfAttr = it._qf ? Array.from(it._qf).join(",") : "";
+  const rowClass = overridden ? "has-decision" : "";
   return `
-    <tr data-key="${esc(it.key)}" data-verdict="${esc(it.current_verdict)}" data-status="${esc(it.status || "")}" data-gate="${esc(it.ai_gate || "")}" data-project="${esc(it.project_key)}" data-initiative="${esc(it.parent_key || "__unlinked__")}" data-qf="${esc(qfAttr)}">
+    <tr class="${rowClass}" data-key="${esc(it.key)}" data-verdict="${esc(it.current_verdict)}" data-status="${esc(it.status || "")}" data-gate="${esc(it.ai_gate || "")}" data-project="${esc(it.project_key)}" data-initiative="${esc(it.parent_key || "__unlinked__")}" data-qf="${esc(qfAttr)}" data-overridden="${overridden ? "1" : "0"}">
       <td><a class="key" href="${esc(url)}" target="_blank" rel="noopener" data-noopen>${esc(it.key)}</a></td>
       <td>
         <div class="summary">${esc(it.summary || "")}</div>
@@ -502,12 +505,18 @@ function renderItemRow(it) {
       </td>
       <td>${esc(it.status || "")}</td>
       <td>${esc(it.priority || "")}</td>
-      <td><span class="pill ${esc(it.current_verdict)}">${esc(it.current_verdict)}</span>${dot}</td>
+      <td>
+        <span class="pill ${esc(it.current_verdict)} ${overridden ? "is-override" : ""}" title="${overridden ? "Your decision: " + esc(decidedVerdict) + (it.override.actor ? " · by " + esc(it.override.actor) : "") : ""}">${esc(it.current_verdict)}</span>
+        ${overridden ? `<div class="decided-by">decided${it.override.actor ? ` · ${esc(it.override.actor)}` : ""}</div>` : ""}
+      </td>
       <td>${it.ai_gate ? `<span class="gate">G${esc(it.ai_gate)}</span>` : ""}</td>
-      <td>${esc(it.override ? it.override.reason || it.ai_reason : it.ai_reason || "")}</td>
+      <td>${esc(overridden ? it.override.reason || it.ai_reason : it.ai_reason || "")}</td>
       <td>
         <div class="actions">
-          ${VERDICTS.map(v => `<button class="act ${v}" data-action="set" data-verdict="${v}" title="Set ${v}">${v === "STOP" ? "Kill" : v}</button>`).join("")}
+          ${VERDICTS.map(v => {
+            const isCurrent = decidedVerdict === v;
+            return `<button class="act ${v}${isCurrent ? " is-current" : ""}" data-action="set" data-verdict="${v}" title="${isCurrent ? "Your current choice — " : "Set "}${v}">${v === "STOP" ? "Kill" : v}</button>`;
+          }).join("")}
           <button class="act hist" data-action="open" title="Open decision modal">…</button>
         </div>
       </td>
