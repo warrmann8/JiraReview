@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Daedalus Backlog Scrub — Management Review</title>
+  <title>Daedalus Backlog Scrub</title>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -10,16 +10,31 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <header class="app">
-    <div class="titles">
-      <div class="eyebrow">Project Daedalus · backlog scrub · management review</div>
-      <h1>AFI Jira Active Roster — Scrub Console</h1>
-      <div class="sub">Walk every meaningful Jira item across the 17 business units. Override the AI verdict, log the decision, refresh when new scrubs land. Nothing here writes back to Jira.</div>
+  <header class="appbar">
+    <div class="brand">
+      <a href="#/" class="brand-link">
+        <span class="brand-mark">◇</span>
+        <span class="brand-name">Daedalus Scrub</span>
+      </a>
     </div>
-    <div class="meta">
-      <div class="me"><span>actor</span><input id="actor" placeholder="your name"></div>
-      <div id="generated"></div>
-      <div><button class="mini-btn" id="refreshAll">Refresh all</button></div>
+    <nav class="appnav">
+      <a href="#/" class="navlink" data-route="home">Portfolio</a>
+      <div class="bu-switch">
+        <label for="bu-jump" class="bu-switch-label">Jump to BU</label>
+        <select id="bu-jump"><option value="">—</option></select>
+      </div>
+    </nav>
+    <div class="appmeta">
+      <div class="status-line">
+        <span id="scorer-status" class="status"></span>
+        <span id="jira-status" class="status"></span>
+        <span id="generated" class="status"></span>
+      </div>
+      <div class="actor-line">
+        <label for="actor">actor</label>
+        <input id="actor" placeholder="your name">
+        <button class="mini-btn" id="refreshAll" title="Re-read live data">Refresh all</button>
+      </div>
     </div>
   </header>
   <main id="app"></main>

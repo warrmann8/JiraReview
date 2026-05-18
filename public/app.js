@@ -11,6 +11,74 @@ const modalBody = document.getElementById("modal-body");
 const actorInput = document.getElementById("actor");
 const refreshAllBtn = document.getElementById("refreshAll");
 const generatedEl = document.getElementById("generated");
+const buJump = document.getElementById("bu-jump");
+const scorerStatusEl = document.getElementById("scorer-status");
+const jiraStatusEl = document.getElementById("jira-status");
+const navLinks = document.querySelectorAll(".navlink[data-route]");
+
+// Cached BU list so the switcher doesn't refetch on every navigation.
+let _busCache = null;
+async function getBus() {
+  if (_busCache) return _busCache;
+  const data = await api("GET", "/api/bus");
+  _busCache = data;
+  populateBuJump(data);
+  return data;
+}
+function populateBuJump(data) {
+  if (!buJump) return;
+  const current = location.hash.startsWith("#/bu/") ? location.hash.slice(5) : "";
+  const opts = ["<option value=\"\">— select BU —</option>"];
+  for (const bu of data.bus) {
+    const empty = (bu.item_count || 0) === 0 ? " · empty" : ` · ${bu.item_count}`;
+    opts.push(`<option value="${esc(bu.slug)}" ${bu.slug === current ? "selected" : ""}>${esc(bu.name)}${empty}</option>`);
+  }
+  buJump.innerHTML = opts.join("");
+}
+if (buJump) {
+  buJump.addEventListener("change", () => {
+    if (buJump.value) location.hash = `#/bu/${buJump.value}`;
+  });
+}
+
+function setNavActive() {
+  const onHome = !location.hash || location.hash === "#" || location.hash === "#/";
+  navLinks.forEach(a => a.classList.toggle("active", a.dataset.route === (onHome ? "home" : "")));
+  // Keep the switcher in sync with current route.
+  if (buJump) {
+    const cur = location.hash.startsWith("#/bu/") ? location.hash.slice(5) : "";
+    if (cur !== buJump.value) buJump.value = cur;
+  }
+}
+
+async function refreshHeaderStatus() {
+  // Scorer status
+  try {
+    const s = await api("GET", "/api/scorer/info");
+    scorerStatusEl.className = "status " + (s.configured ? "ok" : "warn");
+    scorerStatusEl.innerHTML = `<span class="dot"></span>scorer · ${esc(s.configured ? s.provider : "not configured")}`;
+  } catch {
+    scorerStatusEl.className = "status err";
+    scorerStatusEl.innerHTML = `<span class="dot"></span>scorer · error`;
+  }
+  // Jira status
+  try {
+    const j = await api("GET", "/api/jira/status");
+    if (!j.configured) {
+      jiraStatusEl.className = "status warn";
+      jiraStatusEl.innerHTML = `<span class="dot"></span>jira · offline`;
+    } else if (j.ping_ok === false || j.error) {
+      jiraStatusEl.className = "status warn";
+      jiraStatusEl.innerHTML = `<span class="dot"></span>jira · stubs`;
+    } else {
+      jiraStatusEl.className = "status ok";
+      jiraStatusEl.innerHTML = `<span class="dot"></span>jira · live`;
+    }
+  } catch {
+    jiraStatusEl.className = "status err";
+    jiraStatusEl.innerHTML = `<span class="dot"></span>jira · error`;
+  }
+}
 
 // ---- helpers ----
 const esc = (s) => (s == null ? "" : String(s)).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
@@ -40,30 +108,45 @@ function verdictBar(t) {
 
 // ---- routing ----
 window.addEventListener("hashchange", route);
-window.addEventListener("DOMContentLoaded", route);
+window.addEventListener("DOMContentLoaded", () => {
+  refreshHeaderStatus();
+  getBus().catch(() => {});
+  route();
+});
 
 function route() {
   const hash = location.hash.replace(/^#/, "") || "/";
+  setNavActive();
   if (hash.startsWith("/bu/")) renderBu(hash.slice(4));
   else renderLanding();
 }
 
 refreshAllBtn.addEventListener("click", async () => {
-  refreshAllBtn.textContent = "Refreshing...";
+  refreshAllBtn.disabled = true;
+  refreshAllBtn.dataset.orig = refreshAllBtn.textContent;
+  refreshAllBtn.innerHTML = `<span class="spinner-sm"></span> Refreshing`;
   try {
     await api("POST", "/api/refresh");
+    _busCache = null;
+    await refreshHeaderStatus();
     route();
   } finally {
-    refreshAllBtn.textContent = "Refresh all";
+    refreshAllBtn.disabled = false;
+    refreshAllBtn.textContent = refreshAllBtn.dataset.orig || "Refresh all";
   }
 });
 
 // ---- landing: list of BUs ----
 async function renderLanding() {
   let data;
-  try { data = await api("GET", "/api/bus"); }
-  catch (e) { app.innerHTML = `<div class="note">Could not load BUs: ${esc(e.message)}</div>`; return; }
-  generatedEl.textContent = `seed: ${data.generated_at ? new Date(data.generated_at).toLocaleString() : "—"}`;
+  try {
+    // Always refetch on landing so portfolio totals reflect any decisions
+    // made on a BU page since the cache was first warmed.
+    data = await api("GET", "/api/bus");
+    _busCache = data;
+    populateBuJump(data);
+  } catch (e) { app.innerHTML = `<div class="note">Could not load BUs: ${esc(e.message)}</div>`; return; }
+  generatedEl.textContent = `seed · ${data.generated_at ? new Date(data.generated_at).toLocaleDateString() : "—"}`;
 
   // Roll the BU tallies up into a portfolio summary so the landing
   // page leads with totals instead of just a grid.
@@ -135,13 +218,17 @@ const QUICK_FILTERS = [
 ];
 
 async function renderBu(slug) {
-  app.innerHTML = `<div class="crumb"><a href="#/">all business units</a> / <span id="cur"></span></div>
+  app.innerHTML = `<div class="crumb">
+      <a href="#/">Portfolio</a>
+      <span class="crumb-sep">›</span>
+      <span id="cur"></span>
+    </div>
     <div id="bu-body">Loading…</div>`;
   let bu;
   try { bu = await api("GET", `/api/bu/${encodeURIComponent(slug)}`); }
   catch (e) { document.getElementById("bu-body").innerHTML = `<div class="note">Could not load BU: ${esc(e.message)}</div>`; return; }
   document.getElementById("cur").textContent = bu.name;
-  generatedEl.textContent = bu.scrubbed_date ? `scrub: ${bu.scrubbed_date}` : `not yet scrubbed`;
+  generatedEl.textContent = bu.scrubbed_date ? `scrub · ${bu.scrubbed_date}` : `not yet scrubbed`;
 
   Object.assign(filterState, { verdict: null, status: null, project: null, gate: null, initiative: null, search: "", quick: null });
 
