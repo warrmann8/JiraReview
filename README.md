@@ -1,0 +1,58 @@
+# Daedalus Backlog Scrub — Management Review Console
+
+Local app for walking every meaningful Jira item across the 17 AFI business units,
+overriding the AI-generated verdict (KEEP / STOP / FOLD / FLAG), and logging every
+decision to an append-only audit log. Nothing here writes back to Jira.
+
+## Running
+
+```
+npm install
+npm run seed     # rebuilds data/seed.json from the source scrub HTMLs
+npm start        # serves on http://localhost:4173
+```
+
+Open `http://localhost:4173`. Pick a BU. Walk items. Use the per-row buttons to
+set a verdict (KEEP / FOLD / FLAG / STOP — labeled "Kill" on the action row).
+A modal opens to capture the reason and writes a record.
+
+## Data
+
+- `data/seed.json` — read-only seed produced by `scripts/seed.js`. Regenerate
+  after dropping new scrub HTMLs into the uploads folder.
+- `data/state.json` — current overrides keyed by item key. The "current verdict"
+  the UI shows is the override if present, otherwise the AI verdict.
+- `data/decisions.jsonl` — append-only audit log. One JSON record per decision
+  (set or clear), with previous verdict, new verdict, reason, actor, timestamp.
+
+## Adding more BUs
+
+Two BUs (AFI Data & Analytics and AFI Supply Chain) come pre-loaded from the
+two example scrub HTMLs. The other 15 BUs are present as empty shells.
+
+To add another BU's scrub:
+1. Extend `scripts/seed.js` with a parser for the new HTML's data shape, or
+   normalize your scrub into the existing item schema and emit it directly.
+2. Re-run `npm run seed`.
+3. Refresh the browser — the BU tile populates.
+
+## Refresh hooks
+
+Three endpoints are stubbed and ready to be wired to Jira later:
+
+- `POST /api/refresh` — global refresh
+- `POST /api/refresh/bu/:slug` — single BU
+- `POST /api/refresh/project/:key` — single project
+
+Today they just acknowledge the request. When you're ready to pull from Jira
+directly, replace the handler bodies in `server.js` with the Jira call and
+rewrite `data/seed.json` for the affected scope.
+
+## API surface
+
+- `GET  /api/bus` — all BUs with verdict tallies
+- `GET  /api/bu/:slug` — one BU, full projects + items, overrides applied
+- `GET  /api/item/:key` — one item plus its full decision history
+- `POST /api/decision` — body `{ key, verdict, reason, actor }`
+- `DELETE /api/decision/:key` — clear override
+- `GET  /api/decisions?key=...` — full audit log (filter by key optional)
