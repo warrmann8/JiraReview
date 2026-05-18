@@ -617,6 +617,218 @@ app.get("/api/prompt/history/:name", (req, res) => {
   }
 });
 
+// ---- Activity (decisions over time, optionally per actor) ----
+//
+// Walks decisions.jsonl, aggregates by actor / verdict / BU / day.
+// Used by the Portfolio "your activity" panel and the export endpoint.
+
+function readAllDecisions() {
+  if (!fs.existsSync(DECISIONS_FILE)) return [];
+  return fs.readFileSync(DECISIONS_FILE, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map(line => { try { return JSON.parse(line); } catch { return null; } })
+    .filter(Boolean);
+}
+
+app.get("/api/activity", (req, res) => {
+  const mine = req.query.mine === "1";
+  const days = Math.min(365, Math.max(1, parseInt(req.query.days || "30", 10)));
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+
+  const ssoUser = auth.currentUser(req);
+  const targetActor = mine && ssoUser ? (ssoUser.email || ssoUser.name) : null;
+
+  const decisions = readAllDecisions().filter(d => {
+    if (d.action === "clear_override") return false;
+    if (new Date(d.decided_at).getTime() < cutoff) return false;
+    if (targetActor && d.actor !== targetActor) return false;
+    return true;
+  });
+
+  // Roll up.
+  const byVerdict = { KEEP: 0, STOP: 0, FOLD: 0, FLAG: 0 };
+  const byBu = {};
+  const byActor = {};
+  const byDay = {};
+  let changed_from_ai = 0;
+  for (const d of decisions) {
+    byVerdict[d.new_verdict] = (byVerdict[d.new_verdict] || 0) + 1;
+    byBu[d.bu_slug] = (byBu[d.bu_slug] || 0) + 1;
+    byActor[d.actor || "anonymous"] = (byActor[d.actor || "anonymous"] || 0) + 1;
+    const day = d.decided_at.slice(0, 10);
+    byDay[day] = (byDay[day] || 0) + 1;
+    if (d.ai_verdict && d.new_verdict !== d.ai_verdict) changed_from_ai++;
+  }
+
+  res.json({
+    range_days: days,
+    actor_filter: targetActor,
+    total: decisions.length,
+    changed_from_ai,
+    confirmed_ai: decisions.length - changed_from_ai,
+    by_verdict: byVerdict,
+    by_bu: byBu,
+    by_actor: byActor,
+    by_day: byDay,
+    recent: decisions.slice(-20).reverse()
+  });
+});
+
+// ---- Export: self-contained HTML report per BU ----
+//
+// Renders a printable / shareable HTML document for one BU using the
+// same Daedalus aesthetic as the source scrub HTMLs. Single file, inline
+// data + inline CSS, opens directly from the filesystem.
+
+function escHtml(s) {
+  return (s == null ? "" : String(s)).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+}
+
+function renderExport(bu) {
+  const projects = bu.projects.filter(p => p.items.length > 0);
+  const projectRows = projects.map(p => {
+    const tally = p.items.reduce((a, i) => { a[i.current_verdict] = (a[i.current_verdict] || 0) + 1; a.total++; return a; }, { KEEP: 0, STOP: 0, FOLD: 0, FLAG: 0, total: 0 });
+    const rows = p.items.map(i => {
+      const overridden = !!i.override;
+      const decided = overridden ? i.override.verdict : null;
+      const delta = overridden && decided !== i.ai_verdict;
+      const verdictCell = delta
+        ? `<span class="pill subtle ${escHtml(i.ai_verdict)}">${escHtml(i.ai_verdict)}</span> → <span class="pill ${escHtml(decided)}">${escHtml(decided)}</span>`
+        : `<span class="pill ${escHtml(i.current_verdict)}">${escHtml(i.current_verdict)}</span>`;
+      const decidedBy = overridden ? `<div class="decided-by">★ ${escHtml(i.override.actor || "")} · ${escHtml(new Date(i.override.decided_at).toLocaleDateString())}</div>` : "";
+      return `<tr class="${overridden ? "is-decided" : ""}${delta ? " is-delta" : ""}">
+        <td><a href="${escHtml(i.url)}" target="_blank">${escHtml(i.key)}</a></td>
+        <td><div class="summary">${escHtml(i.summary)}</div>${i.parent_key ? `<div class="parent">↳ <b>${escHtml(i.parent_key)}</b>${i.parent_summary ? " · " + escHtml(i.parent_summary) : ""}</div>` : ""}</td>
+        <td>${escHtml(i.status || "")}</td>
+        <td>${verdictCell}${decidedBy}</td>
+        <td>${i.ai_gate ? `G${escHtml(i.ai_gate)}` : ""}</td>
+        <td>${escHtml(overridden ? (i.override.reason || i.ai_reason || "") : (i.ai_reason || ""))}</td>
+      </tr>`;
+    }).join("");
+    return `<section class="project">
+      <header class="proj">
+        <div class="proj-left">
+          <span class="pkey">${escHtml(p.key)}</span>
+          <span class="pname">${escHtml(p.name)}</span>
+          <span class="pcat">${escHtml(p.category)}</span>
+        </div>
+        <div class="proj-right">
+          <span class="pcount">${p.items.length} Epics</span>
+          <span class="mini-tally">
+            <span class="K"><b>${tally.KEEP}</b>K</span>
+            <span class="S"><b>${tally.STOP}</b>S</span>
+            <span class="F"><b>${tally.FOLD}</b>F</span>
+            <span class="G"><b>${tally.FLAG}</b>!</span>
+          </span>
+        </div>
+      </header>
+      <table class="items"><thead><tr>
+        <th>Key</th><th>Summary &amp; Initiative</th><th>Status</th><th>Verdict</th><th>Gate</th><th>Reason</th>
+      </tr></thead><tbody>${rows}</tbody></table>
+    </section>`;
+  }).join("");
+
+  const t = bu.tally;
+  const signalsHtml = (bu.cross_project_signals || []).map(s => `
+    <div class="signal ${s.tone ? escHtml(s.tone) : ""}">
+      <h3>${escHtml(s.title || "")}</h3>
+      <p>${escHtml(s.body || "")}</p>
+    </div>`).join("");
+  const signalsBlock = signalsHtml ? `<section><h2>Cross-project signals</h2><div class="signals">${signalsHtml}</div></section>` : "";
+
+  const questionsHtml = (bu.open_questions || []).map(q => `
+    <li><div class="q">${escHtml(q.q || q)}</div>${q.unlocks ? `<div class="unlocks">unlocks · ${escHtml(q.unlocks)}</div>` : ""}</li>`).join("");
+  const questionsBlock = questionsHtml ? `<section><h2>Open questions</h2><ol class="questions">${questionsHtml}</ol></section>` : "";
+
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>${escHtml(bu.name)} — Daedalus scrub</title>
+<style>
+:root{--bg:#0a0b0d;--bg2:#14161a;--bg3:#1c1f24;--line:#2a2e35;--line2:#1f2329;--text:#c9c5bd;--hi:#f4f1ea;--mid:#8a857c;--low:#5a564f;--accent:#d4a574;--keep:#7d9b6e;--stop:#b85c5c;--fold:#d4a574;--flag:#6b9bb8}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+header.doc{padding:28px 40px 22px;border-bottom:1px solid var(--line)}
+header .eyebrow{font:10px ui-monospace,SFMono-Regular,monospace;letter-spacing:.18em;text-transform:uppercase;color:var(--mid)}
+h1,h2,h3{font-family:Georgia,serif;font-weight:400;color:var(--hi);margin:0}
+h1{font-size:38px;line-height:1.05;margin:6px 0 10px}
+h2{font-size:22px;margin:30px 0 12px}
+h3{font-size:16px;margin:0 0 6px}
+.sub{color:var(--mid);max-width:980px;font-size:14px}
+main{padding:18px 40px 60px;max-width:1880px;margin:0 auto}
+.metric-strip{display:flex;border:1px solid var(--line);background:var(--line2);margin:0 0 18px}
+.metric{flex:1;padding:14px 18px;background:var(--bg2);border-right:1px solid var(--line2)}
+.metric:last-child{border-right:0}
+.metric .num{font-family:Georgia,serif;font-size:30px;color:var(--hi);line-height:1}
+.metric .label{font:10px ui-monospace,SFMono-Regular,monospace;letter-spacing:.16em;text-transform:uppercase;color:var(--mid);margin-top:6px}
+.summary{padding:14px 18px;border-left:2px solid var(--accent);background:rgba(212,165,116,.06);color:var(--text);margin:14px 0 22px;white-space:pre-wrap;font-size:14px}
+.project{border:1px solid var(--line);background:var(--bg2);margin-top:18px}
+.project header.proj{display:flex;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--line);gap:18px;flex-wrap:wrap;align-items:baseline}
+.pkey{font:11px ui-monospace,SFMono-Regular,monospace;color:var(--accent);letter-spacing:.04em}
+.pname{font-family:Georgia,serif;font-size:18px;color:var(--hi);margin-left:10px}
+.pcat{font:9px ui-monospace,SFMono-Regular,monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--mid);border:1px solid var(--line);padding:2px 6px;margin-left:8px}
+.pcount{font:11px ui-monospace,SFMono-Regular,monospace;color:var(--mid)}
+.mini-tally{display:inline-flex;gap:8px;font:10px ui-monospace,SFMono-Regular,monospace;color:var(--mid);margin-left:14px}
+.mini-tally b{color:var(--hi);font-family:Georgia,serif;font-weight:400;margin-right:2px}
+.mini-tally .K b{color:#b6c7a9}.mini-tally .S b{color:#d28d8d}.mini-tally .F b{color:#e2c39e}.mini-tally .G b{color:#a7c5d7}
+table.items{width:100%;border-collapse:collapse;table-layout:fixed}
+table.items th{background:var(--bg3);text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);font:10px ui-monospace,SFMono-Regular,monospace;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+table.items td{padding:11px 12px;font-size:13px;vertical-align:top;border-bottom:1px solid var(--line2);overflow-wrap:anywhere;line-height:1.45}
+table.items td:first-child{width:120px;font-family:ui-monospace,SFMono-Regular,monospace;color:var(--hi)}
+table.items td:nth-child(3){width:90px}table.items td:nth-child(4){width:200px}table.items td:nth-child(5){width:50px}
+.summary{padding:0;border:0;background:none;margin:0;color:var(--hi)}
+.parent{font:10px ui-monospace,SFMono-Regular,monospace;color:var(--mid);margin-top:4px}
+.parent b{color:var(--accent)}
+a{color:var(--hi)}a:hover{color:var(--accent)}
+.pill{display:inline-block;padding:3px 9px;border-radius:2px;font:10px ui-monospace,SFMono-Regular,monospace;letter-spacing:.14em;text-transform:uppercase;border:1px solid var(--line);background:var(--bg3)}
+.pill.KEEP{border-color:rgba(125,155,110,.5);background:rgba(125,155,110,.13);color:#b6c7a9}
+.pill.STOP{border-color:rgba(184,92,92,.5);background:rgba(184,92,92,.13);color:#d28d8d}
+.pill.FOLD{border-color:rgba(212,165,116,.55);background:rgba(212,165,116,.14);color:#e2c39e}
+.pill.FLAG{border-color:rgba(107,155,184,.55);background:rgba(107,155,184,.13);color:#a7c5d7}
+.pill.subtle{opacity:.55}
+.decided-by{font:9px ui-monospace,SFMono-Regular,monospace;color:var(--accent);margin-top:4px;letter-spacing:.06em}
+tr.is-decided{background:rgba(212,165,116,.04)}
+tr.is-delta{background:rgba(212,165,116,.07)}
+.signals{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:12px;margin-top:10px}
+.signal{border:1px solid var(--line);background:var(--bg2);padding:14px 16px}
+.signal.danger{border-left:2px solid var(--stop)}
+.signal p{margin:0;color:var(--text)}
+.questions{padding-left:22px;margin-top:10px}
+.questions li{margin:8px 0}
+.unlocks{font:10px ui-monospace,SFMono-Regular,monospace;color:var(--mid);margin-top:4px}
+@media print{body{background:white;color:#111}h1,h2,h3,.metric .num{color:#111}.metric,.project,.signal,.summary,table.items{background:white;color:#111;border-color:#aaa}.pill{border:1px solid #777;color:#111;background:white}a{color:#111}}
+</style></head><body>
+<header class="doc">
+  <div class="eyebrow">Project Daedalus · backlog scrub · ${escHtml(bu.name)}</div>
+  <h1>${escHtml(bu.name)} — Scrub Report</h1>
+  <div class="sub">${escHtml(bu.bu_summary || "")}</div>
+  <div class="sub" style="margin-top:6px;font:11px ui-monospace,SFMono-Regular,monospace">Generated ${escHtml(new Date().toLocaleString())}${bu.scrubbed_by ? ` · scrubbed by ${escHtml(bu.scrubbed_by)}` : ""}${bu.scrubbed_date ? ` · ${escHtml(bu.scrubbed_date)}` : ""}</div>
+</header>
+<main>
+<div class="metric-strip">
+  <div class="metric"><div class="num">${t.total}</div><div class="label">Epics scored</div></div>
+  <div class="metric"><div class="num">${t.overrides}</div><div class="label">Decisions logged</div></div>
+  <div class="metric"><div class="num" style="color:#b6c7a9">${t.KEEP}</div><div class="label">Keep</div></div>
+  <div class="metric"><div class="num" style="color:#d28d8d">${t.STOP}</div><div class="label">Stop</div></div>
+  <div class="metric"><div class="num" style="color:#e2c39e">${t.FOLD}</div><div class="label">Fold</div></div>
+  <div class="metric"><div class="num" style="color:#a7c5d7">${t.FLAG}</div><div class="label">Flag</div></div>
+</div>
+${projectRows}
+${signalsBlock}
+${questionsBlock}
+</main></body></html>`;
+}
+
+app.get("/api/bu/:slug/export.html", (req, res) => {
+  const seed = loadSeed();
+  const state = loadState();
+  const decorated = applyOverrides(seed, state);
+  const bu = decorated.bus.find(b => b.slug === req.params.slug);
+  if (!bu) return res.status(404).send("BU not found");
+  bu.tally = tallyBu(bu);
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${bu.slug}-scrub-${new Date().toISOString().slice(0, 10)}.html"`);
+  res.send(renderExport(bu));
+});
+
 app.get("/api/scorer/info", (_req, res) => {
   try {
     res.json({

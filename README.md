@@ -106,7 +106,28 @@ Refresh endpoints:
 
 - `GET  /api/bus` — all BUs with verdict tallies
 - `GET  /api/bu/:slug` — one BU, full projects + items, overrides applied
+- `GET  /api/bu/:slug/export.html` — self-contained HTML report for the BU
+- `GET  /api/bu/:slug/initiatives` — distinct parent Initiatives in a BU
 - `GET  /api/item/:key` — one item plus its full decision history
 - `POST /api/decision` — body `{ key, verdict, reason, actor }`
 - `DELETE /api/decision/:key` — clear override
 - `GET  /api/decisions?key=...` — full audit log (filter by key optional)
+- `GET  /api/activity?days=N&mine=1` — rolled-up decisions over a window
+- `GET  /api/prompt`, `PUT /api/prompt`, `GET /api/prompt/history` — AI rules
+- `POST /api/score`, `POST /api/ingest/project/:key/{single,bulk}` — LLM scorer
+- `GET  /api/jira/status`, `POST /api/refresh{,/bu/:slug,/project/:key}` — Jira
+- `GET  /auth/me`, `GET /auth/login`, `GET /auth/callback`, `POST /auth/logout` — SSO
+
+## Keyboard shortcuts
+
+- `Cmd/Ctrl+K` — open the global Epic search palette
+- `/` — focus the BU search box (when in a BU)
+- In the decision modal: `K`/`S`/`F`/`L` to pick a verdict, `Cmd+Enter` to save, `Esc` to close
+- `Shift-click` a row verdict button to save without opening the modal
+
+## Tests
+
+`npm test` runs the node:test suite covering the scorer gating, the Jira
+field mapping + ADF flattening, and the auth middleware semantics. Network
+calls are not exercised — those are the stubs the engineer fills in per
+JIRA-HANDOFF.md and AUTH-HANDOFF.md.

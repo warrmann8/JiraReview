@@ -256,7 +256,6 @@ async function renderLanding() {
     _busCache = data;
     populateBuJump(data);
   } catch (e) { app.innerHTML = `<div class="note">Could not load BUs: ${esc(e.message)}</div>`; return; }
-  // (was: generatedEl status — sidebar shows status differently now)
 
   // Roll the BU tallies up into a portfolio summary so the landing
   // page leads with totals instead of just a grid.
@@ -286,10 +285,15 @@ async function renderLanding() {
       </div>
     </div>
 
+    <div id="activity-panel"></div>
+
     <h2 style="margin-bottom:8px">Business units</h2>
     <div class="sub" style="color:var(--mid);margin:0 0 16px;font-size:14px">Click a populated BU to walk its Epics. Empty BUs are placeholders — use <b style="color:var(--hi)">Add items…</b> on any BU page to ingest scored Epics.</div>
     <div class="bu-grid" id="bu-grid"></div>
   `;
+
+  // Activity panel — last 30 days of decisions.
+  loadActivity(data).catch(() => {});
 
   const grid = document.getElementById("bu-grid");
 
@@ -318,6 +322,80 @@ async function renderLanding() {
   }
 }
 
+async function loadActivity(busData) {
+  const panel = document.getElementById("activity-panel");
+  if (!panel) return;
+  let data;
+  try { data = await api("GET", "/api/activity?days=30"); }
+  catch { return; }
+  if (!data.total) {
+    panel.innerHTML = "";
+    return;
+  }
+  const buNames = {};
+  for (const bu of busData.bus) buNames[bu.slug] = bu.name;
+  const topBus = Object.entries(data.by_bu).sort((a, b) => b[1] - a[1]).slice(0, 4);
+  const topActors = Object.entries(data.by_actor).sort((a, b) => b[1] - a[1]).slice(0, 3);
+  const recent = (data.recent || []).slice(0, 5);
+
+  panel.innerHTML = `
+    <section class="activity">
+      <div class="activity-head">
+        <div class="eyebrow">activity · last 30 days</div>
+        <h2 style="margin-top:4px">Decisions logged</h2>
+      </div>
+      <div class="activity-grid">
+        <div class="activity-cell">
+          <div class="num">${data.total}</div>
+          <div class="label">Decisions</div>
+          <div class="sub-meta">${data.changed_from_ai} changed · ${data.confirmed_ai} confirmed AI</div>
+        </div>
+        <div class="activity-cell">
+          <div class="label">By verdict</div>
+          <div class="bigbar">
+            ${VERDICTS.map(v => {
+              const c = data.by_verdict[v] || 0;
+              const pct = data.total ? Math.round((100 * c) / data.total) : 0;
+              return c ? `<span class="seg seg-${v}" style="flex:${c}" title="${v}: ${c}"></span>` : "";
+            }).filter(Boolean).join("")}
+          </div>
+          <div class="legend">
+            ${VERDICTS.map(v => `<span class="leg leg-${v}"><b>${data.by_verdict[v] || 0}</b> ${v}</span>`).join("")}
+          </div>
+        </div>
+        <div class="activity-cell">
+          <div class="label">Top BUs</div>
+          ${topBus.length ? `<ul class="ranklist">${topBus.map(([slug, n]) => `<li><a href="#/bu/${esc(slug)}">${esc(buNames[slug] || slug)}</a><b>${n}</b></li>`).join("")}</ul>` : `<div class="empty">no BUs yet</div>`}
+        </div>
+        <div class="activity-cell">
+          <div class="label">Reviewers</div>
+          ${topActors.length ? `<ul class="ranklist">${topActors.map(([a, n]) => `<li><span>${esc(a)}</span><b>${n}</b></li>`).join("")}</ul>` : `<div class="empty">—</div>`}
+        </div>
+      </div>
+      ${recent.length ? `
+        <div class="activity-recent">
+          <div class="label">Recent</div>
+          <ul class="recent-list">
+            ${recent.map(d => {
+              const delta = d.ai_verdict && d.new_verdict !== d.ai_verdict;
+              return `<li>
+                <a href="#/bu/${esc(d.bu_slug)}" data-key="${esc(d.key)}" class="recent-item">
+                  <span class="when">${esc(new Date(d.decided_at).toLocaleString())}</span>
+                  <span class="who">${esc(d.actor || "anonymous")}</span>
+                  <span class="rkey">${esc(d.key)}</span>
+                  <span class="rverdict">${delta
+                    ? `<span class="pill subtle ${esc(d.ai_verdict)}">${esc(d.ai_verdict)}</span> → <span class="pill ${esc(d.new_verdict)}">${esc(d.new_verdict)}</span>`
+                    : `<span class="pill ${esc(d.new_verdict)}">${esc(d.new_verdict)}</span>`}</span>
+                  <span class="rwhere">${esc(buNames[d.bu_slug] || d.bu_slug)}</span>
+                </a>
+              </li>`;
+            }).join("")}
+          </ul>
+        </div>` : ""}
+    </section>
+  `;
+}
+
 // ---- BU detail ----
 const filterState = { verdict: null, status: null, project: null, gate: null, initiative: null, search: "", quick: null };
 
@@ -339,7 +417,6 @@ async function renderBu(slug) {
   try { bu = await api("GET", `/api/bu/${encodeURIComponent(slug)}`); }
   catch (e) { document.getElementById("bu-body").innerHTML = `<div class="note">Could not load BU: ${esc(e.message)}</div>`; return; }
   document.getElementById("cur").textContent = bu.name;
-  // (was: generatedEl status — sidebar shows status differently now)
 
   Object.assign(filterState, { verdict: null, status: null, project: null, gate: null, initiative: null, search: "", quick: null });
 
@@ -444,6 +521,7 @@ function renderBuHtml(bu) {
       <div class="filters">
         <button class="mini-btn" id="resetFilters">Reset</button>
         <button class="mini-btn" id="refreshBu">Refresh BU</button>
+        <a class="mini-btn" id="exportBu" href="/api/bu/${esc(bu.slug)}/export.html" target="_blank" rel="noopener" title="Download a self-contained HTML report of this BU">Export HTML</a>
         <button class="mini-btn primary" id="ingestBu">Add items…</button>
       </div>
     </div>
@@ -812,7 +890,6 @@ async function renderPromptEditor() {
       <span id="cur">AI evaluation rules</span>
     </div>
     <div id="prompt-body">Loading…</div>`;
-  // (was: generatedEl status — sidebar shows status differently now)
 
   let data, history;
   try {

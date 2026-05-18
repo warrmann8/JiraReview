@@ -129,6 +129,39 @@ main{position:relative;z-index:1;flex:1;min-width:0;max-width:1880px;margin:0 au
 .portfolio .cell.split .item{flex:1}
 .portfolio .cell.split .item .num{font-size:24px}
 
+/* Activity panel on the Portfolio landing */
+.activity{margin:24px 0 28px;border:1px solid var(--line);background:var(--bg2);padding:18px 22px 8px}
+.activity .activity-head{margin-bottom:14px}
+.activity .activity-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:18px;border-top:1px solid var(--line);padding-top:18px}
+.activity-cell .num{font-family:Fraunces,Georgia,serif;font-size:36px;color:var(--hi);line-height:1;color:var(--accent)}
+.activity-cell .label{font:10px "JetBrains Mono",monospace;letter-spacing:.16em;text-transform:uppercase;color:var(--mid);margin-bottom:8px}
+.activity-cell .sub-meta{font:10px "JetBrains Mono",monospace;color:var(--mid);margin-top:6px}
+.activity-cell .bigbar{display:flex;height:10px;background:var(--bg3);border:1px solid var(--line2);overflow:hidden;margin-top:4px;margin-bottom:8px}
+.activity-cell .bigbar .seg{display:block;height:100%}
+.activity-cell .legend{display:flex;gap:10px;flex-wrap:wrap;font:10px "JetBrains Mono",monospace;color:var(--mid)}
+.activity-cell .legend .leg b{color:var(--hi);font-family:Fraunces,Georgia,serif;font-weight:400;margin-right:3px}
+.activity-cell .legend .leg-KEEP b{color:#b6c7a9}
+.activity-cell .legend .leg-STOP b{color:#d28d8d}
+.activity-cell .legend .leg-FOLD b{color:#e2c39e}
+.activity-cell .legend .leg-FLAG b{color:#a7c5d7}
+.activity-cell .ranklist{list-style:none;padding:0;margin:6px 0 0}
+.activity-cell .ranklist li{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--line2);font-size:13px}
+.activity-cell .ranklist li:last-child{border-bottom:0}
+.activity-cell .ranklist a{color:var(--hi);text-decoration:none;border:0;font-family:Fraunces,Georgia,serif}
+.activity-cell .ranklist a:hover{color:var(--accent)}
+.activity-cell .ranklist b{font-family:Fraunces,Georgia,serif;font-weight:400;color:var(--accent);font-size:16px}
+.activity-cell .empty{color:var(--low);font:10px "JetBrains Mono",monospace}
+.activity-recent{margin-top:16px;padding-top:16px;border-top:1px solid var(--line)}
+.activity-recent .recent-list{list-style:none;padding:0;margin:6px 0 0}
+.recent-item{display:grid;grid-template-columns:170px 140px 110px auto 1fr;gap:14px;padding:8px 0;border-bottom:1px solid var(--line2);text-decoration:none;border:0;color:var(--text);align-items:center;font-size:12px}
+.recent-item:last-child{border-bottom:0}
+.recent-item:hover{background:rgba(212,165,116,.05)}
+.recent-item .when{color:var(--low);font:10px "JetBrains Mono",monospace}
+.recent-item .who{color:var(--mid);font:10px "JetBrains Mono",monospace}
+.recent-item .rkey{color:var(--hi);font:11px "JetBrains Mono",monospace}
+.recent-item .rverdict{display:flex;gap:6px;align-items:center}
+.recent-item .rwhere{color:var(--mid);font-family:Fraunces,Georgia,serif;text-align:right}
+
 .bu-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:1px;background:var(--line2);border:1px solid var(--line)}
 .bu-card{background:var(--bg2);padding:18px;cursor:pointer;transition:background .14s ease;display:flex;flex-direction:column;gap:10px;min-height:160px;border:0}
 .bu-card:hover{background:rgba(212,165,116,.05)}
