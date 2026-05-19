@@ -53,10 +53,10 @@ export function populateSideBus(data) {
       ? `<div class="bu-meta">empty</div>`
       : `<div class="bu-meta">${bu.item_count} epic${bu.item_count === 1 ? "" : "s"}${t.overrides ? ` · <span class="ov">${t.overrides} override${t.overrides === 1 ? "" : "s"}</span>` : ""}</div>
          ${segs ? `<div class="bu-bar">${segs}</div>` : ""}`;
-    return `<a class="side-bu${empty ? " empty" : ""}${bu.slug === current ? " active" : ""}" href="#/bu/${esc(bu.slug)}" title="${esc(bu.name)}">
-      <span class="bu-mark">${esc(initials)}</span>
+    return `<a class="side-bu${empty ? " empty" : ""}${bu.slug === current ? " active" : ""}${bu.signoff ? " signed-off" : ""}" href="#/bu/${esc(bu.slug)}" title="${esc(bu.name)}${bu.signoff ? " — signed off" : ""}">
+      <span class="bu-mark">${esc(initials)}${bu.signoff ? `<span class="signoff-dot" title="Signed off">★</span>` : ""}</span>
       <div class="bu-body">
-        <div class="bu-name">${esc(bu.name)}</div>
+        <div class="bu-name">${esc(bu.name)}${bu.signoff ? ` <span class="signoff-inline">★</span>` : ""}</div>
         ${meta}
       </div>
     </a>`;
@@ -68,6 +68,7 @@ export function setNavActive() {
   let activeRoute = "";
   if (!h || h === "#" || h === "#/") activeRoute = "home";
   else if (h.startsWith("#/prompt")) activeRoute = "prompt";
+  else if (h.startsWith("#/initiative")) activeRoute = "initiatives";
   document.querySelectorAll(".side-item[data-route]").forEach(a => {
     a.classList.toggle("active", a.dataset.route === activeRoute);
   });

@@ -26,7 +26,7 @@ function loadJson(file, fallback) {
 
 function ensureState() {
   if (!fs.existsSync(STATE_FILE)) {
-    fs.writeFileSync(STATE_FILE, JSON.stringify({ overrides: {} }, null, 2));
+    fs.writeFileSync(STATE_FILE, JSON.stringify({ overrides: {}, signoffs: {} }, null, 2));
   }
 }
 
@@ -37,7 +37,13 @@ function loadSeed() {
   return loadJson(SEED_FILE, { bus: [] });
 }
 
-function loadState() { ensureState(); return loadJson(STATE_FILE, { overrides: {} }); }
+function loadState() {
+  ensureState();
+  const s = loadJson(STATE_FILE, { overrides: {}, signoffs: {} });
+  if (!s.signoffs) s.signoffs = {};
+  if (!s.overrides) s.overrides = {};
+  return s;
+}
 function saveState(state) { fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2)); }
 
 function applyOverrides(seed, state) {
@@ -141,7 +147,8 @@ app.get("/api/bus", (_req, res) => {
       project_count: bu.project_count,
       item_count: bu.item_count,
       scrubbed_date: bu.scrubbed_date,
-      tally: tallyBu(bu)
+      tally: tallyBu(bu),
+      signoff: state.signoffs[bu.slug] || null
     }))
   });
 });
@@ -153,6 +160,7 @@ app.get("/api/bu/:slug", (req, res) => {
   const bu = decorated.bus.find(b => b.slug === req.params.slug);
   if (!bu) return res.status(404).json({ error: "BU not found" });
   bu.tally = tallyBu(bu);
+  bu.signoff = state.signoffs[bu.slug] || null;
   res.json(bu);
 });
 
@@ -244,6 +252,69 @@ app.delete("/api/decision/:key", (req, res) => {
 
 app.get("/api/decisions", (req, res) => {
   res.json({ decisions: readDecisionsFor(req.query.key) });
+});
+
+// ---- BU sign-off ----
+//
+// A sign-off is a reviewer marking "I am done with this BU." It records
+// who, when, an optional summary, and the verdict counts at sign-off
+// time. Sign-off does not freeze the data; reviewers can come back and
+// revise. But the portfolio "BUs signed off · 3/17" only counts BUs
+// whose sign-off is current (not revoked).
+
+app.post("/api/bu/:slug/signoff", (req, res) => {
+  const seed = loadSeed();
+  const bu = seed.bus.find(b => b.slug === req.params.slug);
+  if (!bu) return res.status(404).json({ error: "BU not found" });
+
+  const state = loadState();
+  const decorated = applyOverrides(seed, state);
+  const decoratedBu = decorated.bus.find(b => b.slug === req.params.slug);
+  const tally = tallyBu(decoratedBu);
+
+  const ssoUser = auth.currentUser(req);
+  const actor = ssoUser ? (ssoUser.email || ssoUser.name || ssoUser.oid) : (req.body.actor || "anonymous");
+  const summary = (req.body && req.body.summary) ? String(req.body.summary).slice(0, 2000) : "";
+  const decided_at = new Date().toISOString();
+
+  const signoff = {
+    actor,
+    actor_oid: ssoUser ? ssoUser.oid : null,
+    summary,
+    decided_at,
+    tally_at_signoff: tally
+  };
+  state.signoffs[req.params.slug] = signoff;
+  saveState(state);
+
+  appendDecision({
+    action: "bu_signoff",
+    bu_slug: req.params.slug,
+    actor,
+    actor_oid: signoff.actor_oid,
+    summary,
+    tally_at_signoff: tally,
+    decided_at
+  });
+
+  res.json({ ok: true, signoff });
+});
+
+app.delete("/api/bu/:slug/signoff", (req, res) => {
+  const state = loadState();
+  const prior = state.signoffs[req.params.slug];
+  if (!prior) return res.json({ ok: true, revoked: false });
+  delete state.signoffs[req.params.slug];
+  saveState(state);
+  const ssoUser = auth.currentUser(req);
+  appendDecision({
+    action: "bu_signoff_revoked",
+    bu_slug: req.params.slug,
+    actor: ssoUser ? (ssoUser.email || ssoUser.name) : (req.body && req.body.actor) || "anonymous",
+    prior_signoff: prior,
+    decided_at: new Date().toISOString()
+  });
+  res.json({ ok: true, revoked: true });
 });
 
 // ---- Jira integration ----
@@ -365,27 +436,82 @@ app.post("/api/refresh/project/:key", async (req, res) => {
     // top-level entries; their key becomes the parent_key target for Epics.
     const incoming = await jira.searchEpics(projectKey, { includeInitiatives: true, limit: 500 });
 
-    // Merge: existing items keep their AI verdicts; new ones land
-    // unscored (verdict "FLAG" until the next ingest pass).
+    // ---- Refresh contract: human decisions are NEVER overwritten. ----
+    //
+    // 1. Decisions / overrides live in data/state.json, keyed by item.key.
+    //    This handler writes only data/seed.json. state.json is not
+    //    touched. As long as item.key stays stable (and Jira never reuses
+    //    keys), every override survives the refresh.
+    // 2. AI scoring fields on existing items (ai_verdict, ai_gate, ai_reason,
+    //    ai_meta) are preserved from the prior seed entry. Jira does not
+    //    produce these, and the defensive sanitizer below also strips them
+    //    in case a future Jira mapping accidentally emits them.
+    // 3. Items present in seed.json but missing from the Jira payload are
+    //    kept (marked "stale: true") rather than dropped. Dropping would
+    //    orphan their decisions silently. Reviewer can confirm + remove.
+
+    function sanitizeIncoming(raw) {
+      // Strip any field that could overwrite an AI verdict or a human
+      // decision. Only Jira-side fields are allowed through.
+      const allowed = new Set([
+        "key", "summary", "type", "status", "priority",
+        "parent_key", "parent_summary", "url", "description",
+        "labels", "assignee", "updated"
+      ]);
+      const out = {};
+      for (const k of Object.keys(raw || {})) if (allowed.has(k)) out[k] = raw[k];
+      return out;
+    }
+
+    const incomingByKey = new Map(incoming.map(r => [r.key, sanitizeIncoming(r)]));
     const existingByKey = new Map(loc.project.items.map(i => [i.key, i]));
-    const merged = incoming.map(raw => {
-      const prior = existingByKey.get(raw.key);
+    const seen = new Set();
+
+    const merged = [];
+    let preserved = 0, brand_new = 0, stale = 0;
+
+    // Update / append based on incoming Jira state.
+    for (const [k, raw] of incomingByKey) {
+      seen.add(k);
+      const prior = existingByKey.get(k);
       if (prior) {
-        // Keep prior verdict + ai_meta, refresh field values from Jira.
-        return { ...prior, ...raw, project_key: loc.project.key, bu_slug: loc.bu.slug, source_file: "jira" };
+        // Existing item: refresh Jira-side fields, preserve AI fields.
+        // Spread `prior` first so `raw` wins on the Jira-side fields, but
+        // ai_* / child_evidence / ai_meta from prior are kept.
+        merged.push({
+          ...prior,
+          ...raw,
+          project_key: loc.project.key,
+          bu_slug: loc.bu.slug,
+          source_file: "jira",
+          stale: false
+        });
+        preserved++;
+      } else {
+        // New item from Jira — lands as FLAG until the scorer is run.
+        merged.push({
+          ...raw,
+          project_key: loc.project.key,
+          bu_slug: loc.bu.slug,
+          source_file: "jira",
+          ai_verdict: "FLAG",
+          ai_gate: null,
+          ai_reason: "FLAG — Newly pulled from Jira; not yet scored. Run an ingest to walk the gates.",
+          child_evidence: "",
+          ai_meta: null,
+          stale: false
+        });
+        brand_new++;
       }
-      return {
-        ...raw,
-        project_key: loc.project.key,
-        bu_slug: loc.bu.slug,
-        source_file: "jira",
-        ai_verdict: "FLAG",
-        ai_gate: null,
-        ai_reason: "FLAG — Newly pulled from Jira; not yet scored. Run an ingest to walk the gates.",
-        child_evidence: "",
-        ai_meta: null
-      };
-    });
+    }
+    // Items in seed.json that Jira did NOT return — keep them and mark
+    // stale. Otherwise we'd silently lose their decision history.
+    for (const [k, item] of existingByKey) {
+      if (!seen.has(k)) {
+        merged.push({ ...item, stale: true });
+        stale++;
+      }
+    }
 
     loc.project.items = merged;
     loc.project.item_count = merged.length;
@@ -397,8 +523,12 @@ app.post("/api/refresh/project/:key", async (req, res) => {
       project: loc.project.key,
       bu: loc.bu.slug,
       refreshed_at: new Date().toISOString(),
+      pulled: incoming.length,
       item_count: merged.length,
-      pulled: incoming.length
+      preserved,        // existing items with their AI verdicts kept intact
+      new: brand_new,   // items Jira returned that we hadn't seen
+      stale,            // items we had that Jira didn't return — kept, not dropped
+      decisions_preserved: "All overrides in state.json are unaffected by refresh."
     });
   } catch (e) {
     jiraErrorResponse(res, e);
@@ -505,6 +635,86 @@ function persistScoredItem(item, scored) {
   fs.writeFileSync(SEED_FILE, JSON.stringify(seed, null, 2));
   return { skipped: false, key: item.key, stored };
 }
+
+// All Initiatives across every BU, with verdict + override counts.
+// Drives the cross-BU "Browse by Initiative" page.
+app.get("/api/initiatives", (_req, res) => {
+  const seed = loadSeed();
+  const state = loadState();
+  const decorated = applyOverrides(seed, state);
+  const map = new Map();
+  for (const bu of decorated.bus) {
+    for (const p of bu.projects) {
+      for (const it of p.items) {
+        const key = it.parent_key || "__unlinked__";
+        if (!map.has(key)) {
+          map.set(key, {
+            key: it.parent_key || "",
+            summary: it.parent_summary || "",
+            unlinked: !it.parent_key,
+            item_count: 0,
+            override_count: 0,
+            by_verdict: { KEEP: 0, STOP: 0, FOLD: 0, FLAG: 0 },
+            bus: {},     // bu_slug -> { name, count }
+            projects: {} // project_key -> count
+          });
+        }
+        const row = map.get(key);
+        row.item_count++;
+        row.by_verdict[it.current_verdict] = (row.by_verdict[it.current_verdict] || 0) + 1;
+        if (it.override) row.override_count++;
+        if (!row.bus[bu.slug]) row.bus[bu.slug] = { name: bu.name, count: 0 };
+        row.bus[bu.slug].count++;
+        row.projects[p.key] = (row.projects[p.key] || 0) + 1;
+      }
+    }
+  }
+  const initiatives = Array.from(map.values()).sort((a, b) => {
+    if (a.unlinked && !b.unlinked) return 1;
+    if (!a.unlinked && b.unlinked) return -1;
+    return b.item_count - a.item_count;
+  });
+  res.json({ initiatives });
+});
+
+// One Initiative — every Epic across every BU under this parent.
+app.get("/api/initiative/:key", (req, res) => {
+  const seed = loadSeed();
+  const state = loadState();
+  const decorated = applyOverrides(seed, state);
+  const target = req.params.key === "__unlinked__" ? "" : req.params.key;
+  const items = [];
+  let parent_summary = "";
+  for (const bu of decorated.bus) {
+    for (const p of bu.projects) {
+      for (const it of p.items) {
+        if ((it.parent_key || "") === target) {
+          items.push({
+            ...it,
+            bu_slug: bu.slug,
+            bu_name: bu.name,
+            project_name: p.name
+          });
+          if (it.parent_summary && !parent_summary) parent_summary = it.parent_summary;
+        }
+      }
+    }
+  }
+  if (items.length === 0) return res.status(404).json({ error: "no items under this initiative" });
+  const tally = { KEEP: 0, STOP: 0, FOLD: 0, FLAG: 0, total: 0, overrides: 0 };
+  for (const it of items) {
+    tally.total++;
+    tally[it.current_verdict]++;
+    if (it.override) tally.overrides++;
+  }
+  res.json({
+    key: target,
+    summary: parent_summary,
+    unlinked: !target,
+    tally,
+    items
+  });
+});
 
 // Distinct Initiatives observed in a BU's items. Used by the filter UI.
 app.get("/api/bu/:slug/initiatives", (req, res) => {
@@ -630,6 +840,37 @@ function readAllDecisions() {
     .map(line => { try { return JSON.parse(line); } catch { return null; } })
     .filter(Boolean);
 }
+
+// "AI flagged but no human review yet" — Epics where the AI returned
+// FLAG (or low confidence) and a human hasn't touched them.
+app.get("/api/flagged-unattended", (_req, res) => {
+  const seed = loadSeed();
+  const state = loadState();
+  const decorated = applyOverrides(seed, state);
+  const rows = [];
+  for (const bu of decorated.bus) {
+    for (const p of bu.projects) {
+      for (const it of p.items) {
+        if (it.override) continue;
+        const lowConf = it.ai_meta && it.ai_meta.confidence === "low";
+        if (it.ai_verdict === "FLAG" || lowConf) {
+          rows.push({
+            key: it.key,
+            summary: it.summary,
+            parent_key: it.parent_key,
+            ai_verdict: it.ai_verdict,
+            ai_reason: it.ai_reason,
+            confidence: it.ai_meta && it.ai_meta.confidence,
+            bu_slug: bu.slug,
+            bu_name: bu.name,
+            project_key: p.key
+          });
+        }
+      }
+    }
+  }
+  res.json({ total: rows.length, items: rows.slice(0, 50) });
+});
 
 app.get("/api/activity", (req, res) => {
   const mine = req.query.mine === "1";
@@ -817,6 +1058,47 @@ ${questionsBlock}
 </main></body></html>`;
 }
 
+// CSV export — one row per Epic. Suitable for Excel pivots.
+function csvEscape(v) {
+  if (v == null) return "";
+  const s = String(v);
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+app.get("/api/bu/:slug/export.csv", (req, res) => {
+  const seed = loadSeed();
+  const state = loadState();
+  const decorated = applyOverrides(seed, state);
+  const bu = decorated.bus.find(b => b.slug === req.params.slug);
+  if (!bu) return res.status(404).send("BU not found");
+  const header = [
+    "bu", "project_key", "project_name", "item_key", "item_summary",
+    "parent_initiative_key", "parent_initiative_summary",
+    "type", "status", "priority",
+    "ai_verdict", "ai_gate", "ai_reason",
+    "current_verdict", "decision_actor", "decision_reason", "decision_at",
+    "changed_from_ai", "url"
+  ];
+  const rows = [header.join(",")];
+  for (const p of bu.projects) {
+    for (const it of p.items) {
+      const o = it.override;
+      rows.push([
+        bu.name, p.key, p.name, it.key, it.summary,
+        it.parent_key, it.parent_summary,
+        it.type, it.status, it.priority,
+        it.ai_verdict, it.ai_gate, it.ai_reason,
+        it.current_verdict,
+        o ? o.actor : "", o ? o.reason : "", o ? o.decided_at : "",
+        o ? (o.verdict !== it.ai_verdict ? "yes" : "no") : "",
+        it.url
+      ].map(csvEscape).join(","));
+    }
+  }
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${bu.slug}-scrub-${new Date().toISOString().slice(0, 10)}.csv"`);
+  res.send(rows.join("\n"));
+});
+
 app.get("/api/bu/:slug/export.html", (req, res) => {
   const seed = loadSeed();
   const state = loadState();
@@ -887,6 +1169,91 @@ app.post("/api/ingest/project/:key/single", async (req, res) => {
   } catch (e) {
     res.status(e.code === "NOT_EPIC_LEVEL" ? 400 : 500).json({ error: String(e.message || e) });
   }
+});
+
+// Re-score existing items with the current AI rules. Useful after editing
+// prompts/item-review.md — existing scored items keep their old verdicts
+// otherwise. Human decisions (overrides) are NEVER touched; only the AI
+// fields (ai_verdict, ai_gate, ai_reason, ai_meta) get rewritten.
+app.post("/api/rescore/project/:key", async (req, res) => {
+  const projectKey = req.params.key;
+  const seed = loadSeed();
+  const loc = findProject(seed, projectKey);
+  if (!loc) return res.status(404).json({ error: "project not found" });
+  const items = loc.project.items.slice();
+  const mode = req.body && req.body.mode === "full" ? "full" : "lite";
+  const ctx = buContextFor(loc.bu);
+
+  const results = [];
+  for (const item of items) {
+    try {
+      if (!isEpicLevel(item.type)) {
+        results.push({ key: item.key, ok: true, skipped: true, reason: "not Epic-level" });
+        continue;
+      }
+      const scored = await scoreItem(item, ctx, { mode });
+      // Update only the AI fields. Override + decision live in state.json
+      // and are untouched.
+      const fresh = loadSeed();
+      const loc2 = findProject(fresh, projectKey);
+      const idx = loc2.project.items.findIndex(i => i.key === item.key);
+      if (idx === -1) {
+        results.push({ key: item.key, ok: false, error: "item disappeared mid-rescore" });
+        continue;
+      }
+      const prior = loc2.project.items[idx];
+      loc2.project.items[idx] = {
+        ...prior,
+        ai_verdict: scored.verdict,
+        ai_gate: scored.gate,
+        ai_reason: scored.reason,
+        ai_meta: scored._meta && scored._meta.mode === "lite"
+          ? {
+              provider: scored._meta.provider, model: scored._meta.model, mode: "lite",
+              scored_at: scored._meta.scored_at, latency_ms: scored._meta.latency_ms,
+              usage: scored._meta.usage,
+              harvest: scored.verdict === "FOLD"
+                ? { applies: true, target: scored.harvest_target || "", note: "" }
+                : { applies: false, target: "", note: "" }
+            }
+          : {
+              provider: scored._meta.provider, model: scored._meta.model, mode: "full",
+              scored_at: scored._meta.scored_at, latency_ms: scored._meta.latency_ms,
+              usage: scored._meta.usage,
+              confidence: scored.confidence, tentative_verdict: scored.tentative_verdict,
+              rationale: scored.rationale, dependencies: scored.dependencies,
+              needs_to_resolve: scored.needs_to_resolve,
+              questions_for_human: scored.questions_for_human,
+              harvest: scored.harvest, effort_estimate: scored.effort_estimate,
+              staleness_days: scored.staleness_days, notes: scored.notes
+            }
+      };
+      fs.writeFileSync(SEED_FILE, JSON.stringify(fresh, null, 2));
+      results.push({ key: item.key, ok: true, verdict: scored.verdict, prior_verdict: prior.ai_verdict, changed: prior.ai_verdict !== scored.verdict });
+    } catch (e) {
+      results.push({ key: item.key, ok: false, error: String(e.message || e) });
+    }
+  }
+  const changed = results.filter(r => r.ok && r.changed).length;
+  res.json({
+    ok: true, project: projectKey, mode, results,
+    changed,
+    decisions_preserved: "Human overrides in state.json untouched; only ai_* fields updated."
+  });
+});
+
+// Re-score every populated project in a BU. Same contract as the
+// per-project endpoint.
+app.post("/api/rescore/bu/:slug", async (req, res) => {
+  const seed = loadSeed();
+  const bu = seed.bus.find(b => b.slug === req.params.slug);
+  if (!bu) return res.status(404).json({ error: "BU not found" });
+  const populated = bu.projects.filter(p => p.items.length > 0).map(p => p.key);
+  res.json({
+    ok: true, bu: bu.slug,
+    note: `Use /api/rescore/project/:key per project. Populated projects: ${populated.join(", ")}.`,
+    projects: populated
+  });
 });
 
 // Bulk ingest into a project. Uses lite schema by default (~60% fewer output

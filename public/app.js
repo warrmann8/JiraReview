@@ -8,6 +8,7 @@ import {
 } from "./js/sidebar.js";
 import { renderLanding } from "./js/landing.js";
 import { renderBu } from "./js/bu.js";
+import { renderInitiativesIndex, renderInitiativeDetail } from "./js/initiative.js";
 import { renderPromptEditor } from "./js/prompt-editor.js";
 import { setModalRerender } from "./js/modal.js";
 import { open as openSearch } from "./js/search.js";
@@ -16,6 +17,8 @@ function route() {
   const hash = location.hash.replace(/^#/, "") || "/";
   setNavActive();
   if (hash.startsWith("/bu/")) renderBu(hash.slice(4));
+  else if (hash === "/initiatives" || hash === "/initiative") renderInitiativesIndex();
+  else if (hash.startsWith("/initiative/")) renderInitiativeDetail(decodeURIComponent(hash.slice("/initiative/".length)));
   else if (hash === "/prompt" || hash.startsWith("/prompt")) renderPromptEditor();
   else renderLanding();
 }

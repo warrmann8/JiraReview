@@ -3,7 +3,7 @@
 import {
   VERDICTS, app, esc, api, verdictBar, getActor, saveActor, busInvalidate, getBus
 } from "./helpers.js";
-import { toast, toastOk, toastWarn, toastErr } from "./toast.js";
+import { toast, toastOk, toastWarn, toastErr, toastWithAction } from "./toast.js";
 import { openDecisionModal } from "./modal.js";
 import { openIngestModal } from "./ingest.js";
 
@@ -110,7 +110,11 @@ function renderBuHtml(bu) {
       <div class="metric"><div class="num">${t.total}</div><div class="label">Items scored</div></div>
       <div class="metric"><div class="num">${bu.projects.length}</div><div class="label">Projects</div></div>
       <div class="metric ${t.overrides ? "is-accent" : ""}"><div class="num">${t.overrides}</div><div class="label">Decisions made</div></div>
-      <div class="metric"><div class="num">${projects.length}</div><div class="label">Populated projects</div></div>
+      <div class="metric ${bu.signoff ? "is-accent" : ""}">
+        <div class="num">${bu.signoff ? "★" : "—"}</div>
+        <div class="label">${bu.signoff ? `Signed off · ${esc(bu.signoff.actor || "")}` : "Not signed off"}</div>
+        ${bu.signoff && bu.signoff.decided_at ? `<div class="sub-meta">${esc(new Date(bu.signoff.decided_at).toLocaleString())}</div>` : ""}
+      </div>
     </div>
     <div class="rec-strip" id="verdict-chips">
       ${VERDICTS.map(v => `<span class="rec-chip ${v}" data-verdict="${v}"><b>${t[v] || 0}</b>${v}</span>`).join("")}
@@ -128,8 +132,12 @@ function renderBuHtml(bu) {
       <div class="filters">
         <button class="mini-btn" id="resetFilters">Reset</button>
         <button class="mini-btn" id="refreshBu">Refresh BU</button>
-        <a class="mini-btn" id="exportBu" href="/api/bu/${esc(bu.slug)}/export.html" target="_blank" rel="noopener" title="Download a self-contained HTML report of this BU">Export HTML</a>
+        <a class="mini-btn" id="exportBu" href="/api/bu/${esc(bu.slug)}/export.html" target="_blank" rel="noopener" title="Download a self-contained HTML report">Export HTML</a>
+        <a class="mini-btn" id="exportCsv" href="/api/bu/${esc(bu.slug)}/export.csv" title="Download decisions as CSV">Export CSV</a>
         <button class="mini-btn primary" id="ingestBu">Add items…</button>
+        ${bu.signoff
+          ? `<button class="mini-btn signoff-btn done" id="signoffBu" title="Signed off by ${esc(bu.signoff.actor)} · ${esc(new Date(bu.signoff.decided_at).toLocaleString())}">★ Signed off</button>`
+          : `<button class="mini-btn signoff-btn" id="signoffBu" title="Mark this BU as reviewed">Sign off BU</button>`}
       </div>
     </div>
     ${emptyHtml}
@@ -217,7 +225,7 @@ function renderItemRow(it) {
       <td><input type="checkbox" class="row-check" data-key="${esc(it.key)}" aria-label="Select ${esc(it.key)}" data-noopen></td>
       <td><a class="key" href="${esc(url)}" target="_blank" rel="noopener" data-noopen>${esc(it.key)}</a></td>
       <td>
-        <div class="summary">${esc(it.summary || "")}</div>
+        <div class="summary">${esc(it.summary || "")}${it.stale ? `<span class="stale-tag" title="Jira didn't return this item on the latest refresh. Decision history kept; review and clear if it's actually gone.">stale</span>` : ""}</div>
         ${it.parent_key
           ? `<div class="parent-tag">↳ <b>${esc(it.parent_key)}</b>${it.parent_summary ? " · " + esc(it.parent_summary) : ""}</div>`
           : `<div class="parent-tag unlinked">↳ no parent Initiative</div>`}
@@ -300,6 +308,35 @@ function bindBuEvents(bu) {
   const ingestEmpty = document.getElementById("ingestEmptyBu");
   if (ingestEmpty) ingestEmpty.addEventListener("click", () => openIngestModal(bu, () => renderBu(bu.slug)));
 
+  document.getElementById("signoffBu").addEventListener("click", async () => {
+    if (bu.signoff) {
+      if (!confirm(`Revoke the sign-off on ${bu.name}? It was signed off by ${bu.signoff.actor} on ${new Date(bu.signoff.decided_at).toLocaleString()}.`)) return;
+      try {
+        await api("DELETE", `/api/bu/${encodeURIComponent(bu.slug)}/signoff`);
+        toastOk("Sign-off revoked");
+        busInvalidate();
+        getBus().catch(() => {});
+        renderBu(bu.slug);
+      } catch (e) { toastErr("Revoke failed: " + e.message); }
+      return;
+    }
+    const undecided = t.total - t.overrides;
+    const proceed = confirm(`Sign off ${bu.name}?\n\n${t.overrides} of ${t.total} Epics decided.${undecided > 0 ? `\n${undecided} still on the AI verdict — that's fine, sign-off just records "I've reviewed."` : ""}\n\nYou can revoke later.`);
+    if (!proceed) return;
+    const summary = prompt(`Optional sign-off summary (visible in audit log + export):`, "");
+    if (summary === null) return;
+    saveActor();
+    try {
+      await api("POST", `/api/bu/${encodeURIComponent(bu.slug)}/signoff`, {
+        summary, actor: getActor()
+      });
+      toastOk(`${bu.name} signed off`, { duration: 4000 });
+      busInvalidate();
+      getBus().catch(() => {});
+      renderBu(bu.slug);
+    } catch (e) { toastErr("Sign-off failed: " + e.message); }
+  });
+
   document.querySelectorAll(".refresh-proj").forEach(b => {
     b.addEventListener("click", async (e) => {
       e.stopPropagation();
@@ -332,7 +369,17 @@ function bindBuEvents(bu) {
       const btn = e.target.closest("button[data-action]");
       if (btn) {
         if (btn.dataset.action === "set") {
-          if (e.shiftKey) return quickDecide(key, btn.dataset.verdict, bu);
+          // Shift-click on STOP requires a quick confirm — Hard Rule #2
+          // says never STOP a Gate 1 item, so a misclick here can be
+          // costly. KEEP/FOLD/FLAG go straight through; STOP gets a
+          // single confirm dialog.
+          if (e.shiftKey) {
+            if (btn.dataset.verdict === "STOP" &&
+                !confirm("Kill (STOP) this Epic without opening the modal?\n\nFramework Hard Rule #2: never STOP a Gate 1 item. Click Cancel to open the modal and review the AI rationale first.")) {
+              return;
+            }
+            return quickDecide(key, btn.dataset.verdict, bu);
+          }
           openDecisionModal(key, btn.dataset.verdict, bu);
         } else if (btn.dataset.action === "open") {
           openDecisionModal(key, null, bu);
@@ -378,21 +425,59 @@ function bindBuEvents(bu) {
   applyFilters();
 }
 
-// "/" focuses the BU search; only when not already typing in an input.
+// Keyboard nav while on a BU page:
+//   /     focuses the BU search
+//   j/k   move between visible rows
+//   x     toggle row checkbox (for bulk select)
+//   enter open the focused row in the decision modal
 document.addEventListener("keydown", (e) => {
-  if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
   const t = e.target;
   const inField = t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT");
-  if (inField) return;
-  const q = document.getElementById("f-q");
-  if (q) { e.preventDefault(); q.focus(); q.select(); }
+  if (inField || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (!location.hash.startsWith("#/bu/")) return;
+
+  if (e.key === "/") {
+    const q = document.getElementById("f-q");
+    if (q) { e.preventDefault(); q.focus(); q.select(); }
+    return;
+  }
+  if (e.key !== "j" && e.key !== "k" && e.key !== "x" && e.key !== "Enter") return;
+
+  const rows = Array.from(document.querySelectorAll("table.items tbody tr"))
+    .filter(r => r.style.display !== "none");
+  if (rows.length === 0) return;
+  const cur = rows.findIndex(r => r.classList.contains("kbd-cursor"));
+
+  if (e.key === "j" || e.key === "k") {
+    e.preventDefault();
+    const next = Math.max(0, Math.min(rows.length - 1,
+      cur === -1 ? 0 : cur + (e.key === "j" ? 1 : -1)));
+    rows.forEach(r => r.classList.remove("kbd-cursor"));
+    rows[next].classList.add("kbd-cursor");
+    rows[next].scrollIntoView({ block: "center", behavior: "smooth" });
+  } else if (e.key === "x" && cur !== -1) {
+    e.preventDefault();
+    const cb = rows[cur].querySelector(".row-check");
+    if (cb) { cb.checked = !cb.checked; cb.dispatchEvent(new Event("change", { bubbles: true })); }
+  } else if (e.key === "Enter" && cur !== -1) {
+    e.preventDefault();
+    rows[cur].click();
+  }
 });
 
 async function quickDecide(key, verdict, bu) {
   saveActor();
+  let priorOverride = null;
+  // Capture the prior state so Undo can restore it (clear if the item had
+  // no prior decision; reapply the prior verdict if it did).
+  try {
+    const pre = await api("GET", `/api/item/${encodeURIComponent(key)}`);
+    priorOverride = pre && pre.item && pre.item.override ? pre.item.override : null;
+  } catch { /* best effort */ }
+
   try {
     await api("POST", "/api/decision", { key, verdict, reason: "", actor: getActor() });
-    toastOk(`${key} → ${verdict}`, { duration: 2200 });
+    toastWithAction(`${key} → ${verdict}`, "Undo", () => undoDecision(key, priorOverride, bu), { duration: 5000 });
     busInvalidate();
     getBus().catch(() => {});
     renderBu(bu.slug);
@@ -401,8 +486,29 @@ async function quickDecide(key, verdict, bu) {
   }
 }
 
+async function undoDecision(key, priorOverride, bu) {
+  try {
+    if (priorOverride) {
+      await api("POST", "/api/decision", {
+        key, verdict: priorOverride.verdict, reason: priorOverride.reason || "",
+        actor: getActor()
+      });
+      toastOk(`Restored prior decision · ${priorOverride.verdict}`, { duration: 2500 });
+    } else {
+      await api("DELETE", `/api/decision/${encodeURIComponent(key)}`, { actor: getActor() });
+      toastOk(`Cleared · ${key}`, { duration: 2500 });
+    }
+    busInvalidate();
+    getBus().catch(() => {});
+    renderBu(bu.slug);
+  } catch (e) {
+    toastErr("Undo failed: " + e.message);
+  }
+}
+
 async function bulkDecide(verdict, bu) {
-  const keys = Array.from(document.querySelectorAll(".row-check:checked")).map(c => c.dataset.key);
+  const checkedRows = Array.from(document.querySelectorAll(".row-check:checked")).map(c => c.closest("tr"));
+  const keys = checkedRows.map(r => r.dataset.key);
   if (keys.length === 0) return;
   const reason = prompt(`Apply ${verdict} to ${keys.length} Epic${keys.length === 1 ? "" : "s"}.\n\nOptional reason (will apply to all):`);
   if (reason === null) return;
@@ -421,9 +527,80 @@ async function bulkDecide(verdict, bu) {
   dismissProgress();
   if (fail === 0) toastOk(`Decided ${ok} Epic${ok === 1 ? "" : "s"} → ${verdict}`);
   else toastWarn(`Decided ${ok}, failed ${fail}`);
+
+  // Pattern suggestion: if the user just bulk-decided several Epics that
+  // share a parent Initiative or AI verdict, surface remaining undecided
+  // siblings as candidates for the same treatment.
+  const suggestion = findPatternCandidates(checkedRows, verdict);
+
   busInvalidate();
   getBus().catch(() => {});
   renderBu(bu.slug);
+
+  if (suggestion && suggestion.candidateKeys.length >= 2) {
+    setTimeout(() => offerPatternApply(suggestion, verdict, reason || "", bu), 350);
+  }
+}
+
+// Look at the just-decided rows. If they share a parent_key or ai_verdict,
+// return the list of remaining (still undecided) rows that match that
+// signal — these are likely candidates for the same bulk decision.
+function findPatternCandidates(decidedRows, verdict) {
+  if (decidedRows.length < 2) return null;
+  const parents = new Set();
+  const aiVerdicts = new Set();
+  for (const r of decidedRows) {
+    if (r.dataset.initiative && r.dataset.initiative !== "__unlinked__") parents.add(r.dataset.initiative);
+    aiVerdicts.add(r.dataset.verdict); // current_verdict at render time
+  }
+  // Strongest signal: shared parent Initiative.
+  let sharedParent = null;
+  if (parents.size === 1) sharedParent = [...parents][0];
+  let sharedAi = null;
+  if (aiVerdicts.size === 1) sharedAi = [...aiVerdicts][0];
+  if (!sharedParent && !sharedAi) return null;
+
+  const allRows = Array.from(document.querySelectorAll("table.items tbody tr"));
+  const candidates = allRows.filter(r => {
+    if (r.dataset.overridden === "1") return false; // already decided
+    if (decidedRows.includes(r)) return false;
+    if (r.style.display === "none") return false;
+    if (sharedParent && r.dataset.initiative !== sharedParent) return false;
+    if (sharedAi && r.dataset.verdict !== sharedAi) return false;
+    return true;
+  });
+  return {
+    sharedParent, sharedAi,
+    candidateKeys: candidates.map(r => r.dataset.key),
+    candidateRows: candidates
+  };
+}
+
+function offerPatternApply(sig, verdict, reason, bu) {
+  const why = sig.sharedParent
+    ? `Other Epics under ${sig.sharedParent}`
+    : `Other Epics with AI verdict ${sig.sharedAi}`;
+  toastWithAction(
+    `${why} — ${sig.candidateKeys.length} look similar. Apply ${verdict} to those too?`,
+    `Apply ${verdict} to ${sig.candidateKeys.length}`,
+    async () => {
+      saveActor();
+      const actor = getActor();
+      let ok = 0, fail = 0;
+      const dismiss = toast(`Saving ${sig.candidateKeys.length}…`, { duration: 0 });
+      for (const key of sig.candidateKeys) {
+        try { await api("POST", "/api/decision", { key, verdict, reason, actor }); ok++; }
+        catch { fail++; }
+      }
+      dismiss();
+      if (fail === 0) toastOk(`Decided ${ok} more · ${verdict}`);
+      else toastWarn(`Decided ${ok}, failed ${fail}`);
+      busInvalidate();
+      getBus().catch(() => {});
+      renderBu(bu.slug);
+    },
+    { duration: 12000, title: "Bulk pattern detected" }
+  );
 }
 
 function applyFilters() {
