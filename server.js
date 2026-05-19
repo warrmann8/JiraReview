@@ -1,4 +1,4 @@
-// Daedalus Backlog Scrub — local management review server.
+// Initiative Reviewer — local management review server.
 // All state lives on disk under data/. Nothing writes back to Jira.
 
 require("dotenv").config({ path: require("path").join(__dirname, ".env") });
@@ -983,7 +983,7 @@ function renderExport(bu) {
   const questionsBlock = questionsHtml ? `<section><h2>Open questions</h2><ol class="questions">${questionsHtml}</ol></section>` : "";
 
   return `<!doctype html>
-<html><head><meta charset="utf-8"><title>${escHtml(bu.name)} — Daedalus scrub</title>
+<html><head><meta charset="utf-8"><title>${escHtml(bu.name)} — Initiative Review</title>
 <style>
 :root{--bg:#0a0b0d;--bg2:#14161a;--bg3:#1c1f24;--line:#2a2e35;--line2:#1f2329;--text:#c9c5bd;--hi:#f4f1ea;--mid:#8a857c;--low:#5a564f;--accent:#d4a574;--keep:#7d9b6e;--stop:#b85c5c;--fold:#d4a574;--flag:#6b9bb8}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
@@ -1038,10 +1038,10 @@ tr.is-delta{background:rgba(212,165,116,.07)}
 @media print{body{background:white;color:#111}h1,h2,h3,.metric .num{color:#111}.metric,.project,.signal,.summary,table.items{background:white;color:#111;border-color:#aaa}.pill{border:1px solid #777;color:#111;background:white}a{color:#111}}
 </style></head><body>
 <header class="doc">
-  <div class="eyebrow">Project Daedalus · backlog scrub · ${escHtml(bu.name)}</div>
-  <h1>${escHtml(bu.name)} — Scrub Report</h1>
+  <div class="eyebrow">Initiative Reviewer · ${escHtml(bu.name)}</div>
+  <h1>${escHtml(bu.name)} — Review Report</h1>
   <div class="sub">${escHtml(bu.bu_summary || "")}</div>
-  <div class="sub" style="margin-top:6px;font:11px ui-monospace,SFMono-Regular,monospace">Generated ${escHtml(new Date().toLocaleString())}${bu.scrubbed_by ? ` · scrubbed by ${escHtml(bu.scrubbed_by)}` : ""}${bu.scrubbed_date ? ` · ${escHtml(bu.scrubbed_date)}` : ""}</div>
+  <div class="sub" style="margin-top:6px;font:11px ui-monospace,SFMono-Regular,monospace">Generated ${escHtml(new Date().toLocaleString())}${bu.scrubbed_by ? ` · Reviewed by ${escHtml(bu.scrubbed_by)}` : ""}${bu.scrubbed_date ? ` · ${escHtml(bu.scrubbed_date)}` : ""}</div>
 </header>
 <main>
 <div class="metric-strip">
@@ -1095,7 +1095,7 @@ app.get("/api/bu/:slug/export.csv", (req, res) => {
     }
   }
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="${bu.slug}-scrub-${new Date().toISOString().slice(0, 10)}.csv"`);
+  res.setHeader("Content-Disposition", `attachment; filename="${bu.slug}-review-${new Date().toISOString().slice(0, 10)}.csv"`);
   res.send(rows.join("\n"));
 });
 
@@ -1107,7 +1107,7 @@ app.get("/api/bu/:slug/export.html", (req, res) => {
   if (!bu) return res.status(404).send("BU not found");
   bu.tally = tallyBu(bu);
   res.setHeader("Content-Type", "text/html; charset=utf-8");
-  res.setHeader("Content-Disposition", `attachment; filename="${bu.slug}-scrub-${new Date().toISOString().slice(0, 10)}.html"`);
+  res.setHeader("Content-Disposition", `attachment; filename="${bu.slug}-review-${new Date().toISOString().slice(0, 10)}.html"`);
   res.send(renderExport(bu));
 });
 
@@ -1311,7 +1311,7 @@ app.post("/api/ingest/project/:key/bulk", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Daedalus scrub running on http://localhost:${PORT}`);
+  console.log(`Initiative Reviewer running on http://localhost:${PORT}`);
   try {
     const p = getProvider();
     console.log(`Scorer provider: ${p}`);

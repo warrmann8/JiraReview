@@ -1,15 +1,19 @@
-# Daedalus Backlog Scrub — Management Review Console
+# Initiative Reviewer
 
-Local app for walking every meaningful Jira item across the 17 AFI business units,
+Local app for walking every meaningful Jira Epic across the 17 AFI business units,
 overriding the AI-generated verdict (KEEP / STOP / FOLD / FLAG), and logging every
 decision to an append-only audit log. Nothing here writes back to Jira.
+
+The seed data comes from the original Daedalus backlog scrub HTMLs — those upstream
+artifacts are the source of the AI verdicts and the reviewer metadata you see in
+the UI ("Reviewed by…").
 
 ## Running
 
 ```
 npm install
 cp .env.example .env   # then fill in your provider keys
-npm run seed           # rebuilds data/seed.json from the source scrub HTMLs
+npm run seed           # rebuilds data/seed.json from the source review HTMLs
 npm start              # serves on http://localhost:4173
 ```
 

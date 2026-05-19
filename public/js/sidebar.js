@@ -5,7 +5,7 @@ import {
   esc, api, initialsOf, busInvalidate, getBus
 } from "./helpers.js";
 
-const SIDEBAR_KEY = "scrub_sidebar_expanded";
+const SIDEBAR_KEY = "ireview_sidebar_expanded";
 
 export function applySidebarState() {
   const expanded = localStorage.getItem(SIDEBAR_KEY) === "1";

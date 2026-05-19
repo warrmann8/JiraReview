@@ -43,7 +43,7 @@ with the right authority and credentials. You just call it.
 The Azure / Entra admin needs to register a web app. Steps:
 
 1. **Entra admin center** → **App registrations** → **New registration**.
-2. **Name:** "Daedalus Scrub" (or whatever).
+2. **Name:** "Initiative Reviewer" (or whatever).
 3. **Supported account types:** "Accounts in this organizational directory
    only (single tenant)" — unless multi-tenant is needed.
 4. **Redirect URI:** Web platform, value matches `AUTH_REDIRECT_URI`:

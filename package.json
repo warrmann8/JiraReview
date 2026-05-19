@@ -2,7 +2,7 @@
   "name": "jira-review",
   "version": "0.1.0",
   "private": true,
-  "description": "Daedalus Backlog Scrub — management review tool for AFI Jira projects",
+  "description": "Initiative Reviewer — management review tool for AFI Jira projects",
   "main": "server.js",
   "scripts": {
     "seed": "node scripts/seed.js",

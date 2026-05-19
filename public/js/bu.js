@@ -103,7 +103,7 @@ function renderBuHtml(bu) {
 
   return `
     <h1 style="margin-top:6px">${esc(bu.name)}</h1>
-    ${bu.scrubbed_by ? `<div class="eyebrow" style="margin-top:6px">scrubbed by ${esc(bu.scrubbed_by)} · ${esc(bu.scrubbed_date || "")}</div>` : ""}
+    ${bu.scrubbed_by ? `<div class="eyebrow" style="margin-top:6px">Reviewed by ${esc(bu.scrubbed_by)} · ${esc(bu.scrubbed_date || "")}</div>` : ""}
     ${bu.bu_summary ? `<div class="summary">${esc(bu.bu_summary)}</div>` : ""}
     ${buEmptyHtml}
     <div class="metric-strip">

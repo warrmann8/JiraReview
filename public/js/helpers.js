@@ -1,7 +1,23 @@
 // Shared constants, DOM refs, and small utilities used by every module.
 
 export const VERDICTS = ["KEEP", "STOP", "FOLD", "FLAG"];
-export const ACTOR_KEY = "scrub_actor";
+export const ACTOR_KEY = "ireview_actor";
+
+// Migrate older "scrub_actor" / "scrub_sidebar_expanded" localStorage keys
+// (pre-rename) so existing users don't lose their saved values.
+(function migrateLocalStorageKeys() {
+  const migrations = [
+    ["scrub_actor", "ireview_actor"],
+    ["scrub_sidebar_expanded", "ireview_sidebar_expanded"]
+  ];
+  for (const [oldKey, newKey] of migrations) {
+    if (localStorage.getItem(newKey) === null) {
+      const v = localStorage.getItem(oldKey);
+      if (v !== null) localStorage.setItem(newKey, v);
+    }
+    localStorage.removeItem(oldKey);
+  }
+})();
 
 export const app = document.getElementById("app");
 export const modal = document.getElementById("modal");

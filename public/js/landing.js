@@ -28,7 +28,7 @@ export async function renderLanding() {
 
   app.innerHTML = `
     <div class="eyebrow">portfolio · 17 business units · 91 projects</div>
-    <h2 style="margin-top:6px;margin-bottom:14px">Scrub console</h2>
+    <h1 style="margin:6px 0 14px;font-size:34px">Initiative Reviewer</h1>
 
     <div class="portfolio">
       <div class="cell"><div class="num">${totals.total}</div><div class="label">Epics scored</div></div>
